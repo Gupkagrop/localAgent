@@ -53,7 +53,7 @@ class SpeechToText:
                     import torch
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
-                except ImportError:
+                except Exception:
                     pass
 
     def is_loaded(self) -> bool:
