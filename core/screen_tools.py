@@ -81,18 +81,26 @@ VK_MAP = {
 
 @dataclass
 class ScreenDimensions:
-    """Параметры физического разрешения экрана."""
+    """Параметры физического разрешения активного монитора."""
     width: int
     height: int
+    left: int = 0
+    top: int = 0
 
 
 class ScreenController:
-    """Контроллер экрана и устройств ввода для Vision-агента."""
+    """Контроллер экрана и устройств ввода для Vision-агента с поддержкой нескольких мониторов."""
 
     def __init__(self) -> None:
         self.user32 = ctypes.windll.user32
         self.gdi32 = ctypes.windll.gdi32
         self._dimensions = self._get_screen_dimensions()
+        self._current_monitor: Tuple[int, int, int, int] = (
+            self._dimensions.left,
+            self._dimensions.top,
+            self._dimensions.width,
+            self._dimensions.height
+        )
 
     def _attach_desktop(self) -> None:
         """Подключает поток к интерактивному рабочему столу WinSta0\\Default."""
@@ -106,12 +114,59 @@ class ScreenController:
         except Exception:
             pass
 
+    def get_active_monitor_rect(self) -> Tuple[int, int, int, int]:
+        """
+        Возвращает (left, top, width, height) монитора, на котором находится
+        активное окно приложения или курсор мыши.
+        """
+        class RECT(ctypes.Structure):
+            _fields_ = [
+                ("left", ctypes.c_long),
+                ("top", ctypes.c_long),
+                ("right", ctypes.c_long),
+                ("bottom", ctypes.c_long)
+            ]
+
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", wintypes.DWORD),
+                ("rcMonitor", RECT),
+                ("rcWork", RECT),
+                ("dwFlags", wintypes.DWORD)
+            ]
+
+        hwnd = self.user32.GetForegroundWindow()
+        hmon = 0
+        if hwnd:
+            hmon = self.user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST = 2
+
+        if not hmon:
+            class POINT(ctypes.Structure):
+                _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+            pt = POINT()
+            self.user32.GetCursorPos(ctypes.byref(pt))
+            hmon = self.user32.MonitorFromPoint(pt, 2)
+
+        if hmon:
+            mi = MONITORINFO()
+            mi.cbSize = ctypes.sizeof(MONITORINFO)
+            if self.user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+                rc = mi.rcMonitor
+                w = rc.right - rc.left
+                h = rc.bottom - rc.top
+                if w > 0 and h > 0:
+                    return rc.left, rc.top, w, h
+
+        # Резервный возврат основного монитора
+        w_main = self.user32.GetSystemMetrics(0)
+        h_main = self.user32.GetSystemMetrics(1)
+        return 0, 0, w_main, h_main
+
     def _get_screen_dimensions(self) -> ScreenDimensions:
-        """Получает текущее физическое разрешение основного монитора."""
+        """Получает текущее физическое разрешение активного монитора."""
         self._attach_desktop()
-        width = self.user32.GetSystemMetrics(0)   # SM_CXSCREEN
-        height = self.user32.GetSystemMetrics(1)  # SM_CYSCREEN
-        return ScreenDimensions(width=width, height=height)
+        left, top, width, height = self.get_active_monitor_rect()
+        return ScreenDimensions(width=width, height=height, left=left, top=top)
 
     @property
     def dimensions(self) -> ScreenDimensions:
@@ -130,12 +185,14 @@ class ScreenController:
 
     def capture_screen(self) -> Image.Image:
         """
-        Выполняет высокоскоростной снимок экрана через Win32 GDI BitBlt.
+        Выполняет высокоскоростной снимок активного монитора через Win32 GDI BitBlt.
         При необходимости использует mss или PIL.ImageGrab как резервные каналы.
         """
         self._attach_desktop()
         dims = self._get_screen_dimensions()
-        width, height = dims.width, dims.height
+        self._dimensions = dims
+        left, top, width, height = dims.left, dims.top, dims.width, dims.height
+        self._current_monitor = (left, top, width, height)
 
         hwnd = self.user32.GetDesktopWindow()
         hdc_screen = self.user32.GetDC(hwnd)
@@ -146,7 +203,7 @@ class ScreenController:
         hbm = self.gdi32.CreateCompatibleBitmap(hdc_screen, width, height)
         old_hbm = self.gdi32.SelectObject(hdc_mem, hbm)
 
-        ret = self.gdi32.BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, 0, 0, SRCCOPY)
+        ret = self.gdi32.BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, left, top, SRCCOPY)
         if not ret:
             # Очистка и переход к фолбеку
             self.gdi32.SelectObject(hdc_mem, old_hbm)
@@ -204,10 +261,11 @@ class ScreenController:
 
     def _fallback_capture(self) -> Image.Image:
         """Резервный захват экрана через Qt GUI, mss или ImageGrab."""
-        # 1. Если активен контекст Qt — используем нативный grabWindow (100% стабильность в GUI)
+        # 1. Если активен контекст Qt — используем нативный grabWindow на экране под курсором
         try:
-            from PyQt6.QtGui import QGuiApplication
-            q_screen = QGuiApplication.primaryScreen()
+            from PyQt6.QtGui import QGuiApplication, QCursor
+            cursor_pos = QCursor.pos()
+            q_screen = QGuiApplication.screenAt(cursor_pos) or QGuiApplication.primaryScreen()
             if q_screen is not None:
                 pix = q_screen.grabWindow(0)
                 if not pix.isNull():
@@ -220,8 +278,15 @@ class ScreenController:
         try:
             import mss
             with mss.MSS() as sct:
-                monitor = sct.monitors[1]
-                sct_img = sct.grab(monitor)
+                left, top, width, height = self._current_monitor
+                target_mon = None
+                for mon in sct.monitors[1:]:
+                    if abs(mon["left"] - left) < 50 and abs(mon["top"] - top) < 50:
+                        target_mon = mon
+                        break
+                if target_mon is None:
+                    target_mon = sct.monitors[1]
+                sct_img = sct.grab(target_mon)
                 return Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
         except Exception:
             pass
@@ -238,15 +303,14 @@ class ScreenController:
     def denormalize_coordinate(self, norm_y: int, norm_x: int) -> Tuple[int, int]:
         """
         Преобразует нормализованные координаты Qwen (0..1000) в реальные экранные пиксели.
-        Qwen-VL возвращает формат [y, x] в шкале 0..1000.
+        Учитывает физическое смещение активного монитора (left, top) в мультимониторных конфигурациях.
         """
-        self._dimensions = self._get_screen_dimensions()
-        
         safe_x = max(0, min(1000, norm_x))
         safe_y = max(0, min(1000, norm_y))
-        
-        screen_x = int((safe_x / 1000.0) * self._dimensions.width)
-        screen_y = int((safe_y / 1000.0) * self._dimensions.height)
+
+        left, top, width, height = self._current_monitor
+        screen_x = left + int((safe_x / 1000.0) * width)
+        screen_y = top + int((safe_y / 1000.0) * height)
         return screen_x, screen_y
 
     def move_mouse(self, x: int, y: int) -> None:
@@ -309,14 +373,8 @@ class ScreenController:
         delta = -WHEEL_DELTA * amount if direction == "down" else WHEEL_DELTA * amount
         self.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, delta, 0)
 
-    def type_text(self, text: str, press_enter: bool = False) -> None:
-        """
-        Печатает текст через SendInput с использованием флага UNICODE.
-        Поддерживает кириллицу, латиницу, пробелы и спецсимволы без искажения буфера обмена.
-        """
-        if not text:
-            return
-
+    def _type_chars_direct(self, text: str) -> None:
+        """Посимвольный ввод текста через Unicode SendInput."""
         class KEYBDINPUT(ctypes.Structure):
             _fields_ = [
                 ("wVk", ctypes.c_ushort),
@@ -349,6 +407,49 @@ class ScreenController:
             inputs = (INPUT * 2)(inp_down, inp_up)
             self.user32.SendInput(2, inputs, ctypes.sizeof(INPUT))
             time.sleep(0.01)
+
+    def type_text(self, text: str, press_enter: bool = False) -> None:
+        """
+        Печатает текст в активный элемент интерфейса.
+        Использует гибридный ввод:
+        - Короткие фразы (<= 20 символов): посимвольный ввод через Unicode SendInput.
+        - Длинные фразы (> 20 символов): быстрая вставка через буфер обмена (Ctrl+V) с восстановлением буфера.
+        """
+        if not text:
+            if press_enter:
+                self.send_key("enter")
+            return
+
+        if len(text) > 20:
+            import win32clipboard
+            import win32con
+            prev_clipboard: Optional[str] = None
+            try:
+                win32clipboard.OpenClipboard()
+                try:
+                    if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
+                        prev_clipboard = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+                    win32clipboard.EmptyClipboard()
+                    win32clipboard.SetClipboardText(text, win32con.CF_UNICODETEXT)
+                finally:
+                    win32clipboard.CloseClipboard()
+
+                # Вставка через Ctrl+V
+                self.hotkey(["ctrl", "v"])
+                time.sleep(0.08)
+
+                # Восстановление буфера пользователя
+                if prev_clipboard is not None:
+                    win32clipboard.OpenClipboard()
+                    try:
+                        win32clipboard.EmptyClipboard()
+                        win32clipboard.SetClipboardText(prev_clipboard, win32con.CF_UNICODETEXT)
+                    finally:
+                        win32clipboard.CloseClipboard()
+            except Exception:
+                self._type_chars_direct(text)
+        else:
+            self._type_chars_direct(text)
 
         if press_enter:
             time.sleep(0.05)

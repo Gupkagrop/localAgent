@@ -229,6 +229,7 @@ def _worker_process_loop(
         prompt = task.get("prompt", "")
         max_steps = task.get("max_steps", 8)
         history: List[str] = []
+        prev_image: Optional[Image.Image] = None
 
         status_queue.put({"type": "task_started", "prompt": prompt})
 
@@ -251,6 +252,21 @@ def _worker_process_loop(
             status_queue.put({"type": "step_status", "step": step, "status": "Захват экрана..."})
             image = screen.capture_screen()
 
+            # Детекция изменений экрана после предыдущего действия
+            screen_changed = True
+            if prev_image is not None and prev_image.size == image.size:
+                try:
+                    p1 = prev_image.resize((64, 64), Image.Resampling.NEAREST).convert("L")
+                    p2 = image.resize((64, 64), Image.Resampling.NEAREST).convert("L")
+                    diff = sum(abs(a - b) for a, b in zip(p1.getdata(), p2.getdata()))
+                    avg_diff = diff / (64 * 64)
+                    if avg_diff < 1.5:  # Экран изменился менее чем на 1.5%
+                        screen_changed = False
+                except Exception:
+                    pass
+
+            prev_image = image
+
             # Ресайз под динамическую сетку (кратно 28x28)
             img_w, img_h = image.size
             target_w = (img_w // 28) * 28
@@ -265,6 +281,8 @@ def _worker_process_loop(
             user_content = f"Цель пользователя: {prompt}\n"
             if history_str:
                 user_content += f"Предыдущие выполненные действия:\n{history_str}\n"
+            if not screen_changed and step > 1:
+                user_content += "Внимание: после предыдущего шага экран не изменился. Элемент мог не сработать или быть перекрыт всплывающим окном/баннером. Закрой помеху или повтори действие точнее.\n"
             user_content += "Определи следующее действие в формате JSON."
 
             messages = [

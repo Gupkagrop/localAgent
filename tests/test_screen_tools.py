@@ -24,27 +24,35 @@ class TestScreenTools(unittest.TestCase):
         dims = self.controller.dimensions
         # Верхний левый угол
         x, y = self.controller.denormalize_coordinate(norm_y=0, norm_x=0)
-        self.assertEqual(x, 0)
-        self.assertEqual(y, 0)
+        self.assertEqual(x, dims.left)
+        self.assertEqual(y, dims.top)
 
         # Нижний правый угол
         x, y = self.controller.denormalize_coordinate(norm_y=1000, norm_x=1000)
-        self.assertEqual(x, dims.width)
-        self.assertEqual(y, dims.height)
+        self.assertEqual(x, dims.left + dims.width)
+        self.assertEqual(y, dims.top + dims.height)
 
     def test_denormalize_coordinate_center(self) -> None:
         """Проверка центра экрана (500, 500)."""
         dims = self.controller.dimensions
         x, y = self.controller.denormalize_coordinate(norm_y=500, norm_x=500)
-        self.assertAlmostEqual(x, dims.width // 2, delta=2)
-        self.assertAlmostEqual(y, dims.height // 2, delta=2)
+        self.assertAlmostEqual(x, dims.left + dims.width // 2, delta=2)
+        self.assertAlmostEqual(y, dims.top + dims.height // 2, delta=2)
 
     def test_denormalize_coordinate_clamping(self) -> None:
         """Проверка отсечения координат за пределами диапазона 0..1000."""
         dims = self.controller.dimensions
         x, y = self.controller.denormalize_coordinate(norm_y=-100, norm_x=1200)
-        self.assertEqual(x, dims.width)
-        self.assertEqual(y, 0)
+        self.assertEqual(x, dims.left + dims.width)
+        self.assertEqual(y, dims.top)
+
+    def test_active_monitor_detection(self) -> None:
+        """Проверка определения активного монитора."""
+        left, top, w, h = self.controller.get_active_monitor_rect()
+        self.assertGreater(w, 0)
+        self.assertGreater(h, 0)
+        self.assertIsInstance(left, int)
+        self.assertIsInstance(top, int)
 
     def test_vk_map_contains_essentials(self) -> None:
         """Проверка наличия ключевых клавиш в таблице виртуальных кодов."""
