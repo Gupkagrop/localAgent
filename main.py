@@ -86,9 +86,9 @@ class AppCoordinator(QObject):
         # Фоновый запуск Vision-агента в режиме Always-Warm
         self.vision_manager.start()
 
-        # Таймер опроса очереди событий Vision-агента (каждые 40 мс)
+        # Таймер опроса очереди событий Vision-агента (каждые 120 мс)
         self._vision_timer = QTimer(self)
-        self._vision_timer.setInterval(40)
+        self._vision_timer.setInterval(120)
         self._vision_timer.timeout.connect(self._poll_vision_agent)
         self._vision_timer.start()
 

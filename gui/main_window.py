@@ -507,7 +507,9 @@ class MainWindow(QMainWindow):
         self.log_view.appendPlainText(message)
 
     def set_vu_level(self, level: float):
-        self.vu_bar.setValue(int(level * 100))
+        int_val = int(level * 100)
+        if self.vu_bar.value() != int_val:
+            self.vu_bar.setValue(int_val)
 
     def update_agent_state(self, is_running: bool):
         if is_running:

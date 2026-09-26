@@ -89,6 +89,8 @@ class AudioListener:
 
     def _run_loop(self):
         """Единый цикл чтения из звуковой карты с непрерывным VU-метром."""
+        last_vu_time = 0.0
+        last_vu_level = 0.0
         try:
             with sd.InputStream(
                 samplerate=SAMPLE_RATE,
@@ -101,11 +103,16 @@ class AudioListener:
                     data, overflowed = stream.read(CHUNK_SIZE)
                     chunk = data.flatten()
 
-                    # 1. Расчет RMS и непрерывное обновление VU-метра в UI
+                    # 1. Расчет RMS и дросселированное обновление VU-метра в UI (макс 12.5 Гц)
                     rms = float(np.sqrt(np.mean(chunk**2)))
                     if self.on_vu_meter:
-                        # Масштабируем сигнал для наглядности (0.0 .. 1.0)
-                        self.on_vu_meter(min(1.0, rms * 12.0))
+                        now = time.time()
+                        level = min(1.0, rms * 12.0)
+                        if now - last_vu_time >= 0.08:
+                            if abs(level - last_vu_level) >= 0.015 or level == 0.0:
+                                last_vu_time = now
+                                last_vu_level = level
+                                self.on_vu_meter(level)
 
                     # 2. Обработка в зависимости от текущего режима
                     with self._state_lock:

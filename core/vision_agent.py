@@ -197,14 +197,25 @@ def _worker_process_loop(
     for candidate in candidates:
         status_queue.put({"type": "log", "message": f"Загрузка модели {candidate} в 4-битном режиме (NF4)..."})
         try:
-            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                candidate,
-                quantization_config=quant_config,
-                device_map="auto",
-                torch_dtype=torch.float16,
-                low_cpu_mem_usage=True
-            )
-            processor = AutoProcessor.from_pretrained(candidate)
+            try:
+                model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                    candidate,
+                    quantization_config=quant_config,
+                    device_map="auto",
+                    torch_dtype=torch.float16,
+                    low_cpu_mem_usage=True,
+                    local_files_only=True
+                )
+                processor = AutoProcessor.from_pretrained(candidate, local_files_only=True)
+            except Exception:
+                model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                    candidate,
+                    quantization_config=quant_config,
+                    device_map="auto",
+                    torch_dtype=torch.float16,
+                    low_cpu_mem_usage=True
+                )
+                processor = AutoProcessor.from_pretrained(candidate)
             status_queue.put({"type": "ready", "message": f"Vision-модель {candidate} готова к работе"})
             break
         except Exception as e:
