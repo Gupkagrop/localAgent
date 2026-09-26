@@ -38,12 +38,9 @@ class TestDecisionEngine(unittest.TestCase):
         self.assertIn("git status", res["parameters"]["prompt"])
 
     def test_model_status(self):
-        has_file = os.path.exists(os.path.join(self.engine.models_dir, "qwen2.5-1.5b-instruct-q4_k_m.gguf"))
-        self.assertEqual(self.engine.is_llm_available(), has_file)
-        if has_file:
-            self.assertIn("Локальная LLM", self.engine.get_model_status())
-        else:
-            self.assertIn("Fast-Path", self.engine.get_model_status())
+        status = self.engine.get_model_status()
+        self.assertIn("Jedi-3B", status)
+        self.assertTrue(self.engine.is_llm_available())
 
     def test_antigravity_cli_plain(self):
         res = self.engine.parse_command("Открой терминал Antigravity")
@@ -82,9 +79,8 @@ class TestDecisionEngine(unittest.TestCase):
 
     def test_youtube_search_complex(self):
         res = self.engine.parse_command("Открой, пожалуйста, ютубчик и включи там видео мармука.")
-        self.assertEqual(res["action"], "open_url")
-        self.assertIn("youtube.com/results?search_query=", res["target"])
-        self.assertIn("мармука", res["target"])
+        self.assertEqual(res["action"], "vision_agent")
+        self.assertIn("мармука", res["parameters"]["prompt"])
 
     def test_vk_open_with_punctuation(self):
         res = self.engine.parse_command("Открой ВК, пожалуйста.")
@@ -103,21 +99,16 @@ class TestDecisionEngine(unittest.TestCase):
         self.assertTrue(res["parameters"].get("dangerous"))
 
     def test_youtube_direct_play_latest(self):
-        # Проверка намерения прямого воспроизведения последнего ролика
+        # Сложная мультимодальная инструкция направляется в VisionAgent
         res = self.engine.parse_command("На ютуб включить последнее видео мармука")
-        self.assertEqual(res["action"], "open_url")
-        self.assertTrue(res["parameters"].get("direct_play"))
-        self.assertTrue(res["parameters"].get("sort_by_date"))
-        self.assertIn("мармук", res["parameters"]["query"])
-        self.assertIn("sp=CAI", res["target"])
+        self.assertEqual(res["action"], "vision_agent")
+        self.assertIn("мармук", res["parameters"]["prompt"])
 
     def test_youtube_direct_play_without_keyword_youtube(self):
-        # Проверка включения ролика без явного произнесения слова «ютуб»
+        # Сложная мультимодальная инструкция направляется в VisionAgent
         res = self.engine.parse_command("Включи последнее видео мармука")
-        self.assertEqual(res["action"], "open_url")
-        self.assertTrue(res["parameters"].get("direct_play"))
-        self.assertTrue(res["parameters"].get("sort_by_date"))
-        self.assertIn("мармук", res["parameters"]["query"])
+        self.assertEqual(res["action"], "vision_agent")
+        self.assertIn("мармук", res["parameters"]["prompt"])
 
     def test_subpage_vk_messages(self):
         # Проверка открытия страницы сообщений ВК
@@ -150,39 +141,34 @@ class TestDecisionEngine(unittest.TestCase):
         self.assertEqual(res["target"], "https://mail.google.com/mail/u/0/#inbox")
 
     def test_universal_site_search_kinopoisk(self):
-        # Проверка универсального поиска на Кинопоиске
+        # Проверка автономного управления через Vision-агента
         res = self.engine.parse_command("На Кинопоиске найди фильм Начало")
-        self.assertEqual(res["action"], "chrome_cdp")
-        self.assertEqual(res["parameters"]["site"], "кинопоиск")
-        self.assertEqual(res["parameters"]["query"], "фильм Начало")
+        self.assertEqual(res["action"], "vision_agent")
+        self.assertIn("Начало", res["parameters"]["prompt"])
 
     def test_universal_site_search_avito(self):
-        # Проверка универсального поиска на Авито
+        # Проверка автономного управления через Vision-агента
         res = self.engine.parse_command("Найди на Авито велосипед")
-        self.assertEqual(res["action"], "chrome_cdp")
-        self.assertEqual(res["parameters"]["site"], "авито")
-        self.assertEqual(res["parameters"]["query"], "велосипед")
+        self.assertEqual(res["action"], "vision_agent")
+        self.assertIn("велосипед", res["parameters"]["prompt"])
 
     def test_universal_site_search_wikipedia(self):
-        # Проверка универсального поиска в Википедии
+        # Проверка автономного управления через Vision-агента
         res = self.engine.parse_command("В Википедии найди квантовую физику")
-        self.assertEqual(res["action"], "chrome_cdp")
-        self.assertEqual(res["parameters"]["site"], "википедия")
-        self.assertEqual(res["parameters"]["query"], "квантовую физику")
+        self.assertEqual(res["action"], "vision_agent")
+        self.assertIn("квантовую физику", res["parameters"]["prompt"])
 
     def test_universal_site_search_ozon(self):
-        # Проверка универсального поиска на Озоне
+        # Проверка автономного управления через Vision-агента
         res = self.engine.parse_command("На Озоне найди кофеварку")
-        self.assertEqual(res["action"], "chrome_cdp")
-        self.assertEqual(res["parameters"]["site"], "озон")
-        self.assertEqual(res["parameters"]["query"], "кофеварку")
+        self.assertEqual(res["action"], "vision_agent")
+        self.assertIn("кофеварку", res["parameters"]["prompt"])
 
     def test_universal_site_search_wildberries(self):
-        # Проверка универсального поиска на Wildberries
+        # Проверка автономного управления через Vision-агента
         res = self.engine.parse_command("На wildberries найди кроссовки")
-        self.assertEqual(res["action"], "chrome_cdp")
-        self.assertEqual(res["parameters"]["site"], "wildberries")
-        self.assertEqual(res["parameters"]["query"], "кроссовки")
+        self.assertEqual(res["action"], "vision_agent")
+        self.assertIn("кроссовки", res["parameters"]["prompt"])
 
     def test_window_control_close(self):
         # Проверка закрытия приложений
@@ -214,12 +200,10 @@ class TestDecisionEngine(unittest.TestCase):
         self.assertEqual(res["parameters"]["text"], "купить молоко и хлеб")
 
     def test_in_app_search_telegram(self):
-        # Проверка поиска внутри приложения
+        # Поиск внутри приложения направляется в Vision-агента
         res = self.engine.parse_command("В телеграме найди проект")
-        self.assertEqual(res["action"], "app_type")
-        self.assertEqual(res["target"], "search")
-        self.assertEqual(res["parameters"]["app_name"], "телеграм")
-        self.assertTrue(res["parameters"]["search_mode"])
+        self.assertEqual(res["action"], "vision_agent")
+        self.assertIn("проект", res["parameters"]["prompt"])
 
     def test_app_tabs_hotkeys(self):
         # Проверка горячих клавиш вкладок
@@ -238,6 +222,19 @@ from core.executor import CommandExecutor
 from core.keyboard_hook import CopilotKeyHook, VK_F23, VK_F23_ALT
 
 class TestCoreModules(unittest.TestCase):
+    def test_executor_vision_agent(self):
+        from unittest.mock import MagicMock
+        mock_vm = MagicMock()
+        mock_vm.is_running.return_value = True
+        mock_vm.execute_task.return_value = True
+
+        executor = CommandExecutor(vision_manager=mock_vm)
+        cmd = {"action": "vision_agent", "parameters": {"prompt": "На ютубе найди Мармука"}}
+        ok, msg = executor.execute(cmd)
+        self.assertTrue(ok)
+        self.assertEqual(msg, "Анализирую экран...")
+        mock_vm.execute_task.assert_called_once_with("На ютубе найди Мармука")
+
     def test_audio_ducker_init(self):
         ducker = AudioDucker()
         self.assertFalse(ducker._is_ducked)

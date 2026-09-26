@@ -20,10 +20,11 @@ from core.decision_engine import DecisionEngine
 from core.text_to_speech import TextToSpeech
 from core.executor import CommandExecutor
 from core.keyboard_hook import CopilotKeyHook
+from core.vision_agent import VisionAgentProcessManager
 
 from gui.main_window import MainWindow
 from gui.tray_manager import TrayManager
-from gui.floating_pill import FloatingPill
+from gui.floating_pill import FloatingPill, ClickIndicatorOverlay
 from gui.spotlight_bar import SpotlightBar
 from create_shortcut import create_desktop_shortcut
 
@@ -55,6 +56,7 @@ class AppCoordinator(QObject):
         self.window = MainWindow(self.config_path)
         self.tray = TrayManager()
         self.pill = FloatingPill()
+        self.click_overlay = ClickIndicatorOverlay()
         self.spotlight = SpotlightBar()
 
         # 2. Инициализация ядра с сохраненными настройками
@@ -66,13 +68,27 @@ class AppCoordinator(QObject):
         stt_model = self.window.settings.get("stt_model", "turbo")
         self.audio_ducker = AudioDucker()
         self.decision_engine = DecisionEngine()
-        self.executor = CommandExecutor(self.audio_ducker, on_log=self.log)
+        self.vision_manager = VisionAgentProcessManager()
+        self.executor = CommandExecutor(
+            self.audio_ducker,
+            on_log=self.log,
+            vision_manager=self.vision_manager
+        )
         self.stt = SpeechToText(model_size=stt_model, device="cuda")
         self.tts = TextToSpeech(voice_name=tts_voice, speed=sapi_speed)
         self.listener = AudioListener(device_index=saved_device, on_vu_meter=self.vu_meter_signal.emit)
 
         self.is_agent_running = True
         self._is_processing_voice = False
+
+        # Фоновый запуск Vision-агента в режиме Always-Warm
+        self.vision_manager.start()
+
+        # Таймер опроса очереди событий Vision-агента (каждые 40 мс)
+        self._vision_timer = QTimer(self)
+        self._vision_timer.setInterval(40)
+        self._vision_timer.timeout.connect(self._poll_vision_agent)
+        self._vision_timer.start()
 
         # 3. Подключение сигналов
         self._connect_signals()
@@ -554,6 +570,55 @@ class AppCoordinator(QObject):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _poll_vision_agent(self) -> None:
+        """Опрашивает очередь событий фонового процесса Vision-агента и передает их в GUI."""
+        events = self.vision_manager.poll_status()
+        for ev in events:
+            ev_type = ev.get("type")
+            if ev_type == "ready":
+                self.log("✓ Vision Computer-Use Agent (Jedi-3B) готов к работе в фоновом процессе.")
+            elif ev_type == "task_started":
+                self.pill.show_step(1, 6, "Анализирую экран...")
+                self.log(f"Vision-агент начал выполнение: «{ev.get('prompt', '')}»")
+            elif ev_type == "step_status":
+                step = ev.get("step", 1)
+                status = ev.get("status", "")
+                self.pill.show_step(step, 6, status)
+            elif ev_type == "action_decided":
+                step = ev.get("step", 1)
+                thought = ev.get("thought", "")
+                action_name = ev.get("action", "")
+                msg = thought or f"Действие: {action_name}"
+                self.pill.show_step(step, 6, msg)
+                self.log(f"  [Шаг {step}] {msg}")
+            elif ev_type == "click_performed":
+                x = ev.get("x", 0)
+                y = ev.get("y", 0)
+                self.click_overlay.show_click(x, y)
+            elif ev_type == "interrupted":
+                reason = ev.get("reason", "Прервано пользователем")
+                self.pill.show_error(reason)
+                self.log(f"⚠ Vision-агент прерван: {reason}")
+                self._play_sound("error")
+            elif ev_type == "task_completed":
+                success = ev.get("success", False)
+                message = ev.get("message", "Готово")
+                if success:
+                    self.pill.show_executing(message)
+                    self.log(f"✓ Задача успешно выполнена: {message}")
+                    self._play_sound("success")
+                    if self.window.settings.get("tts_enabled", False):
+                        self.tts.speak(message)
+                else:
+                    self.pill.show_error(message)
+                    self.log(f"⚠ Задача не завершена: {message}")
+                    self._play_sound("error")
+            elif ev_type == "error":
+                err = ev.get("message", "Ошибка агента")
+                self.pill.show_error("Ошибка агента")
+                self.log(f"❌ Ошибка Vision-агента: {err}")
+                self._play_sound("error")
+
     def toggle_agent(self, enable: bool):
         """Переключает статус ассистента с полным освобождением VRAM при остановке."""
         self.is_agent_running = enable
@@ -565,9 +630,11 @@ class AppCoordinator(QObject):
             self.listener.stop_wake_word_loop()
             self.stt.unload_model()
             self.decision_engine.unload_model()
+            self.vision_manager.stop()
             self.log("Ассистент остановлен. Видеопамять (VRAM) освобождена до 0 МБ.")
         else:
             self._apply_activation_mode()
+            self.vision_manager.start()
             self.log("Ассистент активен и готов к командам.")
 
     def _handle_voice_input(self, pre_command: str = ""):
@@ -618,9 +685,17 @@ class AppCoordinator(QObject):
                 # 5. Роутинг и исполнение
                 self.pill_executing_signal.emit("Выполняю...")
                 command = self.decision_engine.parse_command(text)
+                is_vision = command.get("action") == "vision_agent"
                 success, msg = self.executor.execute(command)
 
-                if msg == "CONFIRM_REQUIRED":
+                if is_vision:
+                    # Для асинхронного Vision-агента ход выполнения отслеживается таймером _poll_vision_agent
+                    if success:
+                        self.pill_executing_signal.emit("Анализирую экран...")
+                    else:
+                        self._play_sound("error")
+                        self.pill_error_signal.emit(msg)
+                elif msg == "CONFIRM_REQUIRED":
                     if self.window.settings.get("confirm_dangerous_actions", True):
                         self.pill_executing_signal.emit("Требуется подтверждение...")
                         self.confirm_action_signal.emit(command, text)
@@ -656,7 +731,17 @@ class AppCoordinator(QObject):
         """Исполнение команды, введенной текстом через Spotlight."""
         self.log(f"Spotlight: «{text}»")
         command = self.decision_engine.parse_command(text)
+        is_vision = command.get("action") == "vision_agent"
         success, msg = self.executor.execute(command)
+
+        if is_vision:
+            if success:
+                self.pill_executing_signal.emit("Анализирую экран...")
+            else:
+                self._play_sound("error")
+                self.pill_error_signal.emit(msg)
+            return
+
         if msg == "CONFIRM_REQUIRED":
             if self.window.settings.get("confirm_dangerous_actions", True):
                 self.confirm_action_signal.emit(command, text)
@@ -680,6 +765,7 @@ class AppCoordinator(QObject):
         self.listener.stop_stream()
         self.stt.unload_model()
         self.decision_engine.unload_model()
+        self.vision_manager.stop()
         self.tray.tray_icon.hide()
         QApplication.quit()
 

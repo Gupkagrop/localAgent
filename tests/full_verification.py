@@ -209,6 +209,43 @@ def test_shortcut_and_configs():
     print(f"  [OK] commands.json найден: {has_commands}")
     return has_settings and has_commands
 
+def test_vision_computer_use_agent():
+    print_section("9. ПРОВЕРКА VISION COMPUTER-USE И SCREEN TOOLS")
+    try:
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication(sys.argv)
+
+        from core.screen_tools import ScreenController
+        from core.vision_agent import ActionParser, FailSafeMonitor, VisionAgentProcessManager
+        from gui.floating_pill import ClickIndicatorOverlay
+
+        # 1. Захват экрана Win32 GDI BitBlt
+        screen = ScreenController()
+        w, h = screen.screen_width, screen.screen_height
+        img = screen.capture_screen()
+        print(f"  [OK] Захват экрана Win32 GDI (BitBlt): разрешение {w}x{h}, захвачено {img.size}")
+
+        # 2. Денормализация координат 0..1000
+        cx, cy = screen.denormalize_coordinate(500, 500)
+        print(f"  [OK] Денормализация координат [500, 500] -> ({cx}, {cy}) (Центр экрана)")
+
+        # 3. Парсер действий ActionParser
+        action = ActionParser.parse('{"thought": "Клик по кнопке поиска", "action": "click", "coordinate": [120, 450]}')
+        print(f"  [OK] ActionParser JSON -> action={action.action_type}, coord={action.coordinate}, thought='{action.thought}'")
+
+        # 4. Монитор аварийной остановки FailSafe
+        failsafe = FailSafeMonitor()
+        print(f"  [OK] Fail-Safe монитор (ESC + смещение мыши): активен, прерывание={failsafe.is_interrupted()[0]}")
+
+        # 5. Менеджер процесса и оверлей клика
+        manager = VisionAgentProcessManager()
+        overlay = ClickIndicatorOverlay()
+        print(f"  [OK] VisionAgentProcessManager: модель '{manager.model_name}', ClickIndicatorOverlay готов ({overlay.size_px}px)")
+        return True
+    except Exception as e:
+        print(f"  [FAIL] Ошибка тестирования Vision-агента: {e}")
+        return False
+
 def main():
     print("\n" + "#"*60)
     print("  ЗАПУСК ПОЛНОЙ ВЕРИФИКАЦИИ ANTIGRAVITY VOICE ASSISTANT")
@@ -222,7 +259,8 @@ def main():
         test_decision_engine(),
         test_keyboard_hook(),
         test_gui_components(),
-        test_shortcut_and_configs()
+        test_shortcut_and_configs(),
+        test_vision_computer_use_agent()
     ]
 
     print_section("ИТОГОВЫЙ СТАТУС ВЕРИФИКАЦИИ")

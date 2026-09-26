@@ -89,13 +89,26 @@ class FloatingPill(QWidget):
         self.show()
         self.raise_()
 
+    def show_step(self, step: int, max_steps: int, action_text: str) -> None:
+        """Показывает текущий промежуточный шаг выполнения Vision-агента."""
+        self._hide_timer.stop()
+        self.dot.setStyleSheet("color: #38BDF8;")  # Неоновый голубой (активное действие агента)
+        display = f"[{step}/{max_steps}] {action_text.strip()}"
+        if len(display) > 58:
+            display = display[:55] + "..."
+        self.label.setText(display)
+        self.adjustSize()
+        self._reposition()
+        self.show()
+        self.raise_()
+
     def show_executing(self, action_name: str = "Выполняю..."):
         """Показывает статус выполнения действия."""
         self.dot.setStyleSheet("color: #10B981;")  # Зеленый свет
         self.label.setText(action_name)
         self.adjustSize()
         self._reposition()
-        self._hide_timer.start(1600)  # Скрываем через 1.6 сек после завершения
+        self._hide_timer.start(2000)  # Скрываем через 2.0 сек после завершения
 
     def show_error(self, message: str = "Не удалось распознать"):
         """Показывает статус ошибки."""
@@ -103,4 +116,77 @@ class FloatingPill(QWidget):
         self.label.setText(message)
         self.adjustSize()
         self._reposition()
-        self._hide_timer.start(2000)
+        self._hide_timer.start(2500)
+
+
+class ClickIndicatorOverlay(QWidget):
+    """
+    Полупрозрачный оверлей маркера клика (пульсирующий круг).
+    Показывает точное место действия Vision-агента на экране Windows.
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint |
+            Qt.WindowType.Tool
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+
+        self.size_px = 64
+        self.setFixedSize(self.size_px, self.size_px)
+
+        self._current_step = 0
+        self._max_steps = 10
+        self._timer = QTimer(self)
+        self._timer.setInterval(30)
+        self._timer.timeout.connect(self._animate_step)
+
+    def show_click(self, screen_x: int, screen_y: int) -> None:
+        """Показывает анимацию клика в координатах экрана."""
+        half = self.size_px // 2
+        self.move(int(screen_x - half), int(screen_y - half))
+        self._current_step = 0
+        self.show()
+        self.raise_()
+        self._timer.start()
+
+    def _animate_step(self) -> None:
+        self._current_step += 1
+        if self._current_step >= self._max_steps:
+            self._timer.stop()
+            self.hide()
+            return
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        from PyQt6.QtGui import QPainter, QPen, QBrush
+        from PyQt6.QtCore import QPointF
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        progress = self._current_step / float(self._max_steps)
+        radius = 8.0 + progress * 20.0
+        alpha = int(240 * (1.0 - progress))
+
+        center_x = self.width() / 2.0
+        center_y = self.height() / 2.0
+
+        # Внешнее пульсирующее кольцо
+        pen = QPen(QColor(0, 240, 255, alpha))
+        pen.setWidthF(2.5)
+        painter.setPen(pen)
+        painter.setBrush(QBrush(QColor(0, 240, 255, int(alpha * 0.25))))
+        painter.drawEllipse(QPointF(center_x, center_y), radius, radius)
+
+        # Центральная точка клика
+        center_pen = QPen(QColor(255, 255, 255, alpha))
+        center_pen.setWidthF(1.5)
+        painter.setPen(center_pen)
+        painter.setBrush(QBrush(QColor(0, 240, 255, alpha)))
+        painter.drawEllipse(QPointF(center_x, center_y), 4.0, 4.0)
+

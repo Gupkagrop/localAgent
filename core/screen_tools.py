@@ -118,6 +118,16 @@ class ScreenController:
         """Возвращает актуальные размеры экрана."""
         return self._dimensions
 
+    @property
+    def screen_width(self) -> int:
+        """Ширина экрана в пикселях."""
+        return self._dimensions.width
+
+    @property
+    def screen_height(self) -> int:
+        """Высота экрана в пикселях."""
+        return self._dimensions.height
+
     def capture_screen(self) -> Image.Image:
         """
         Выполняет высокоскоростной снимок экрана через Win32 GDI BitBlt.
@@ -193,7 +203,20 @@ class ScreenController:
         return self._fallback_capture()
 
     def _fallback_capture(self) -> Image.Image:
-        """Резервный захват экрана через mss или ImageGrab."""
+        """Резервный захват экрана через Qt GUI, mss или ImageGrab."""
+        # 1. Если активен контекст Qt — используем нативный grabWindow (100% стабильность в GUI)
+        try:
+            from PyQt6.QtGui import QGuiApplication
+            q_screen = QGuiApplication.primaryScreen()
+            if q_screen is not None:
+                pix = q_screen.grabWindow(0)
+                if not pix.isNull():
+                    from PIL import ImageQt
+                    return ImageQt.fromqpixmap(pix).convert("RGB")
+        except Exception:
+            pass
+
+        # 2. Захват экрана через mss (быстрый в изолированном Worker)
         try:
             import mss
             with mss.MSS() as sct:
@@ -201,8 +224,16 @@ class ScreenController:
                 sct_img = sct.grab(monitor)
                 return Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
         except Exception:
+            pass
+
+        # 3. Фолбек на стандартный ImageGrab
+        try:
             from PIL import ImageGrab
             return ImageGrab.grab()
+        except Exception:
+            pass
+
+        return Image.new("RGB", (self.screen_width, self.screen_height), color=(30, 30, 30))
 
     def denormalize_coordinate(self, norm_y: int, norm_x: int) -> Tuple[int, int]:
         """

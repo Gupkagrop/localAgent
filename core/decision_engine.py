@@ -1,26 +1,28 @@
 """
 Модуль семантического роутинга и принятия решений (Decision Engine).
-Преобразует произвольный текст голосовой команды в строго типизированный JSON.
-Объединяет сверхбыстрый Fast-Path (0 мс) и поддержку локальной LLM с полной выгрузкой VRAM.
+Обеспечивает двухуровневую гибридную маршрутизацию:
+1. Fast-Path (0 мс, 0 МБ VRAM): мгновенные системные команды (громкость, окна, медиа, запуск по алиасам).
+2. Vision-Path: автономное выполнение задач в интерфейсе Windows/Web через Vision-агента (Jedi-3B / Qwen2.5-VL).
 """
-import re
+
 import json
 import os
-import gc
-from typing import Optional, Any
+import re
+from typing import Any, Dict, List, Optional
+
 
 class DecisionEngine:
-    def __init__(self, models_dir: Optional[str] = None, config_path: Optional[str] = None):
+    """Двухуровневый маршрутизатор команд ассистента."""
+
+    def __init__(self, config_path: Optional[str] = None, models_dir: Optional[str] = None) -> None:
         self.project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.models_dir = models_dir or os.path.join(self.project_dir, "models")
         self.commands_path = config_path or os.path.join(self.project_dir, "config", "commands.json")
-        self._llm = None
-        self._is_loaded = False
         self._load_commands_config()
 
-    def _load_commands_config(self):
-        """Загружает динамическую конфигурацию приложений и ссылок из commands.json."""
-        self.app_map = {
+    def _load_commands_config(self) -> None:
+        """Загружает словарь известных приложений и URL."""
+        self.app_map: Dict[str, str] = {
             "калькулятор": "calc.exe",
             "блокнот": "notepad.exe",
             "проводник": "explorer.exe",
@@ -28,672 +30,262 @@ class DecisionEngine:
             "хром": "chrome.exe",
             "браузер": "chrome.exe",
             "телеграм": "telegram.exe",
-            "настройки": "ms-settings:"
+            "настройки": "ms-settings:",
         }
-        self.url_map = {
-            "ютуб": "https://youtube.com",
-            "youtube": "https://youtube.com",
+        self.url_map: Dict[str, str] = {
+            "ютуб": "https://www.youtube.com",
+            "youtube": "https://www.youtube.com",
             "гитхаб": "https://github.com",
             "github": "https://github.com",
             "вк": "https://vk.com",
             "vk": "https://vk.com",
             "вконтакте": "https://vk.com",
-            "почта": "https://mail.google.com"
+            "почта": "https://mail.google.com",
+            "яндекс": "https://ya.ru",
         }
-        if os.path.exists(self.commands_path):
-            try:
-                with open(self.commands_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if "apps" in data and isinstance(data["apps"], dict):
-                        self.app_map.update(data["apps"])
-                    if "urls" in data and isinstance(data["urls"], dict):
-                        self.url_map.update(data["urls"])
-            except Exception as e:
-                print(f"[DecisionEngine Error loading commands.json] {e}")
+        if not os.path.exists(self.commands_path):
+            return
 
-    def is_llm_available(self) -> bool:
-        """Проверяет наличие локального файла весов GGUF."""
-        model_path = os.path.join(self.models_dir, "qwen2.5-1.5b-instruct-q4_k_m.gguf")
-        return os.path.exists(model_path) and os.path.getsize(model_path) > 100_000_000
+        try:
+            with open(self.commands_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if "apps" in data and isinstance(data["apps"], dict):
+                    self.app_map.update(data["apps"])
+                if "urls" in data and isinstance(data["urls"], dict):
+                    self.url_map.update(data["urls"])
+        except Exception as e:
+            print(f"[DecisionEngine Error loading commands.json] {e}")
 
     def get_model_status(self) -> str:
-        """Возвращает наглядный статус работы модуля ИИ."""
-        if self.is_llm_available():
-            return "Локальная LLM (Qwen2.5 1.5B Q4)"
-        return "Fast-Path (0 мс, 0 МБ VRAM)"
+        """Возвращает наглядный статус работы роутера."""
+        return "Fast-Path (0 мс) + Vision Computer-Use (Jedi-3B)"
 
-    def download_llm_model(self, progress_callback: Optional[Any] = None) -> bool:
-        """Скачивает модель Qwen2.5-1.5B GGUF с Hugging Face."""
-        url = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf"
-        os.makedirs(self.models_dir, exist_ok=True)
-        dest_path = os.path.join(self.models_dir, "qwen2.5-1.5b-instruct-q4_k_m.gguf")
-        temp_path = dest_path + ".download"
-
-        try:
-            import urllib.request
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req) as response:
-                total_size = int(response.headers.get("Content-Length", 0))
-                downloaded = 0
-                block_size = 1024 * 1024  # 1 MB
-
-                with open(temp_path, "wb") as out_file:
-                    while True:
-                        buffer = response.read(block_size)
-                        if not buffer:
-                            break
-                        downloaded += len(buffer)
-                        out_file.write(buffer)
-                        if progress_callback and total_size > 0:
-                            percent = int((downloaded / total_size) * 100)
-                            progress_callback(percent, downloaded, total_size)
-
-            if os.path.exists(dest_path):
-                os.remove(dest_path)
-            os.rename(temp_path, dest_path)
-            return True
-        except Exception:
-            if os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except Exception:
-                    pass
-            return False
+    def is_llm_available(self) -> bool:
+        """Проверяет доступность нейросетевого контура (Vision-агент всегда доступен через Worker)."""
+        return True
 
     def load_model(self) -> bool:
-        """Загружает модель GGUF в видеопамять если файл существует."""
-        model_path = os.path.join(self.models_dir, "qwen2.5-1.5b-instruct-q4_k_m.gguf")
-        if not os.path.exists(model_path):
-            return False
-
-        try:
-            from llama_cpp import Llama
-            self._llm = Llama(
-                model_path=model_path,
-                n_gpu_layers=-1,
-                n_ctx=1024,
-                verbose=False
-            )
-            self._is_loaded = True
-            return True
-        except Exception as e:
-            print(f"[LLM Load Error] {e}")
-            self._llm = None
-            self._is_loaded = False
-            return False
+        """Проверяет доступность директории моделей (совместимость)."""
+        return os.path.exists(self.models_dir)
 
     def unload_model(self) -> None:
-        """Полная выгрузка нейросети из VRAM в 0 МБ."""
-        if self._llm is not None:
-            del self._llm
-            self._llm = None
-            self._is_loaded = False
-            gc.collect()
+        """Освобождает ресурсы модели (совместимость интерфейса)."""
+        pass
 
-    def parse_command(self, query: str) -> dict[str, Any]:
+    def download_llm_model(self, progress_callback: Optional[Any] = None) -> bool:
+        """Совместимость с UI загрузки (веса скачиваются HuggingFace автоматом)."""
+        if progress_callback:
+            progress_callback(100, 100, 100)
+        return True
+
+    def parse_command(self, text: str) -> Dict[str, Any]:
         """
-        Преобразует пользовательский запрос в структурированное действие.
-        Возвращает: {"action": "...", "target": "...", "parameters": {...}}
+        Основной метод анализа голосовой команды.
+        Сначала проверяет мгновенный Fast Path. Если совпадений нет — направляет в VisionAgent.
         """
-        raw_query = query.strip()
-        if not raw_query:
+        cleaned = text.strip()
+        if not cleaned:
             return {"action": "unknown", "target": "", "parameters": {}}
 
-        # Очищаем обращение («джарвис», «компьютер»)
-        cleaned_raw = re.sub(r"^(джарвис|компьютер|ассистент)[\s,]+", "", raw_query, flags=re.IGNORECASE).strip()
-        text = cleaned_raw.lower()
+        # 1. Попытка мгновенного разбора через Fast Path
+        fast_result = self._parse_fast_path(cleaned)
+        if fast_result is not None:
+            return fast_result
 
-        # 1. Antigravity 2.0 (GUI)
-        if any(kw in text for kw in ["антигравити", "antigravity"]):
-            # Приоритет: сначала проверяем создание нового диалога
-            if "новый чат" in text or "новый диалог" in text:
-                return {
-                    "action": "antigravity_gui",
-                    "target": "new_chat",
-                    "parameters": {}
-                }
+        # 2. Если это интерфейсное действие, поиск или сложное взаимодействие — передаем в VisionAgent
+        return {
+            "action": "vision_agent",
+            "target": "computer_use",
+            "parameters": {
+                "prompt": cleaned
+            }
+        }
 
-            # Проверяем, есть ли запрос на ввод промпта
-            match_prompt = re.search(r"(напиши|создай|сделай|запрос|спроси)\s+(.+)", cleaned_raw, flags=re.IGNORECASE)
-            if match_prompt and "cli" not in text and "терминал" not in text:
+    def _parse_fast_path(self, query: str) -> Optional[Dict[str, Any]]:
+        """
+        Мгновенный разбор регулярными выражениями системных команд (0 мс задержки).
+        """
+        raw_query = query.strip()
+        q_lower = raw_query.lower()
+
+        # 1. Интеграция с Antigravity 2.0 GUI и CLI (с сохранением оригинального регистра текста/кода)
+        if "антигравити" in q_lower or "antigravity" in q_lower:
+            if any(w in q_lower for w in ["новый чат", "создай чат"]):
+                return {"action": "antigravity_gui", "target": "new_chat", "parameters": {}}
+
+            prompt_match = re.search(r"(?:напиши|спроси|отправь|скажи)\s+(?:в\s+)?(?:антигравити|antigravity)\s+(.+)", raw_query, re.IGNORECASE)
+            if prompt_match:
                 return {
                     "action": "antigravity_gui",
                     "target": "prompt",
-                    "parameters": {"prompt": match_prompt.group(2).strip(), "new_chat": True}
+                    "parameters": {"prompt": prompt_match.group(1).strip(), "new_chat": False}
                 }
 
-            if "cli" not in text and "терминал" not in text and "консоль" not in text:
-                return {
-                    "action": "antigravity_gui",
-                    "target": "open",
-                    "parameters": {}
-                }
+            if any(w in q_lower for w in ["cli", "терминал", "консоль", "запусти в терминале", "agy"]):
+                return {"action": "antigravity_cli", "target": "launch", "parameters": {"prompt": raw_query}}
 
-        # 2. Antigravity CLI
-        if any(kw in text for kw in ["cli", "agy", "терминал", "консоль"]) and ("antigravity" in text or "антигравити" in text or "agy" in text):
-            match_task = re.search(r"(cli|agy|терминал|консоль)\s+(.+)", cleaned_raw, flags=re.IGNORECASE)
-            prompt = match_task.group(2).strip() if match_task else ""
+            if any(w in q_lower for w in ["открой", "запусти", "покажи"]):
+                return {"action": "antigravity_gui", "target": "open", "parameters": {}}
+
+        # Нормализация для системных команд
+        q = q_lower
+        # Удаляем слово-триггер если оно присутствует в тексте
+        q = re.sub(r"^(?:джарвис|ассистент|компьютер|jarvis)[,\s]+", "", q).strip()
+        # Удаляем знаки препинания и вежливые слова в конце фразы
+        q = q.rstrip(".,!? ").strip()
+        q = re.sub(r"[, ]+(?:пожалуйста|плиз|плииз)$", "", q).strip()
+        q = q.rstrip(".,!? ").strip()
+
+        # 2. Управление громкостью звука
+        vol_match = re.search(r"(?:громкость|звук)\s*(?:на|в)?\s*(\d{1,3})%?", q)
+        if vol_match:
+            val = min(100, max(0, int(vol_match.group(1))))
             return {
-                "action": "antigravity_cli",
-                "target": "launch",
-                "parameters": {"prompt": prompt}
+                "action": "set_volume",
+                "target": "absolute",
+                "parameters": {"percent": val}
             }
 
-        # 3. Громкость звука
-        volume_keywords = ["громк", "звук", "тише", "потише", "громче", "погромче", "без звука", "мут", "заглуши"]
-        if any(kw in text for kw in volume_keywords):
-            # Точный процент
-            match_num = re.search(r"(\d+)\s*(%|процент)?", text)
-            if match_num:
-                val = int(match_num.group(1))
-                return {
-                    "action": "set_volume",
-                    "target": "absolute",
-                    "parameters": {"percent": max(0, min(100, val))}
-                }
-            if any(kw in text for kw in ["тише", "убавь", "потише", "снизь"]):
-                return {
-                    "action": "set_volume",
-                    "target": "step_down",
-                    "parameters": {"step": 10}
-                }
-            if any(kw in text for kw in ["громче", "прибавь", "погромче", "увеличь"]):
-                return {
-                    "action": "set_volume",
-                    "target": "step_up",
-                    "parameters": {"step": 10}
-                }
-            if any(kw in text for kw in ["выключи звук", "без звука", "мут", "заглуши"]):
-                return {
-                    "action": "set_volume",
-                    "target": "mute",
-                    "parameters": {}
-                }
+        if any(w in q for w in ["сделай громче", "прибавь звук", "погромче", "увеличь громкость"]):
+            return {"action": "set_volume", "target": "step_up", "parameters": {"step": 10}}
 
-        # 4. Управление медиаплеером
-        if any(kw in text for kw in ["пауза", "останови музыку", "стоп музыка", "плей", "продолжи воспроизведение"]):
-            return {
-                "action": "media_control",
-                "target": "play_pause",
-                "parameters": {}
-            }
-        if any(kw in text for kw in ["следующий трек", "след трек", "переключи трек", "вперед"]):
-            return {
-                "action": "media_control",
-                "target": "next_track",
-                "parameters": {}
-            }
-        if any(kw in text for kw in ["предыдущий трек", "пред трек", "назад"]):
-            return {
-                "action": "media_control",
-                "target": "prev_track",
-                "parameters": {}
-            }
+        if any(w in q for w in ["сделай тише", "убавь звук", "потише", "уменьши громкость"]):
+            return {"action": "set_volume", "target": "step_down", "parameters": {"step": 10}}
 
-        # Извлекаем слова без пунктуации для быстрого поиска
-        words = [re.sub(r"[^\w-]", "", w) for w in text.split()]
+        if any(w in q for w in ["выключи звук", "заглуши", "без звука", "мут"]):
+            return {"action": "set_volume", "target": "mute", "parameters": {}}
 
-        # 5. Управление окнами и вкладками (закрыть, свернуть, развернуть, рабочий стол)
-        if any(kw in text for kw in ["сверни всё", "сверни все", "покажи рабочий стол", "рабочий стол"]):
-            return {
-                "action": "window_control",
-                "target": "minimize_all",
-                "parameters": {}
-            }
+        if any(w in q for w in ["включи звук", "верни звук", "размут"]):
+            return {"action": "set_volume", "target": "unmute", "parameters": {}}
 
-        if text.startswith("новая вкладка") or text.startswith("открой новую вкладку"):
-            return {
-                "action": "app_hotkey",
-                "target": "new_tab",
-                "parameters": {"app_name": "браузер"}
-            }
+        # 3. Управление медиаплеером
+        if any(w in q for w in ["пауза", "стоп музыка", "останови музыку", "продолжи воспроизведение"]):
+            return {"action": "media_control", "target": "play_pause", "parameters": {}}
 
-        if text.startswith("закрой вкладку"):
-            return {
-                "action": "app_hotkey",
-                "target": "close_tab",
-                "parameters": {"app_name": "браузер"}
-            }
+        if any(w in q for w in ["следующий трек", "переключи трек", "следующая песня"]):
+            return {"action": "media_control", "target": "next_track", "parameters": {}}
 
-        if any(kw in text for kw in ["разверни на весь экран", "на весь экран", "разверни окно"]):
-            target_app = re.sub(r"\b(?:разверни|на весь экран|окно|приложение)\b", "", text).strip()
-            return {
-                "action": "window_control",
-                "target": "maximize",
-                "parameters": {"app_name": target_app or "окно"}
-            }
+        if any(w in q for w in ["предыдущий трек", "прошлый трек", "назад трек"]):
+            return {"action": "media_control", "target": "prev_track", "parameters": {}}
 
-        if text.startswith("сверни"):
-            target_app = re.sub(r"^сверни\s*", "", text).strip()
-            return {
-                "action": "window_control",
-                "target": "minimize",
-                "parameters": {"app_name": target_app or "окно"}
-            }
+        # 4. Горячие клавиши вкладок (перед управлением окнами!)
+        if "новая вкладка" in q:
+            return {"action": "app_hotkey", "target": "new_tab", "parameters": {"hotkey": "new_tab"}}
+        if "закрой вкладку" in q:
+            return {"action": "app_hotkey", "target": "close_tab", "parameters": {"hotkey": "close_tab"}}
 
-        if text.startswith("закрой") and not any(kw in text for kw in ["вкладку", "звук", "ноутбук", "компьютер"]):
-            target_app = re.sub(r"^закрой\s*(?:окно|программу|приложение)?\s*", "", text).strip()
+        # 5. Управление окнами и рабочим столом Windows
+        if any(w in q for w in ["сверни все", "сверни всё", "рабочий стол", "покажи рабочий стол"]):
+            return {"action": "window_control", "target": "minimize_all", "parameters": {}}
+
+        close_match = re.search(r"^(?:закрой|закрой окно|закрой программу|закрой приложение)\s*(.*)", q)
+        if close_match:
+            target_app = close_match.group(1).strip()
             return {
                 "action": "window_control",
                 "target": "close",
-                "parameters": {"app_name": target_app or "окно"}
+                "parameters": {"app_name": target_app}
             }
 
-        # 6. Ввод текста и поиск внутри приложений (In-App Automation)
-        # 6.1 Поиск внутри мессенджеров / приложений: «в телеграме найди [текст]»
-        m_app_search = re.search(
-            r"(?:в|во|открой)\s+([a-zA-Zа-яА-Я0-9_.-]+)\s+(?:и\s+)?(?:найди|поищи)\s+(.+)",
-            cleaned_raw,
-            flags=re.IGNORECASE
-        )
-        if m_app_search:
-            app_raw = self._normalize_site_name(m_app_search.group(1).lower())
-            if app_raw in ["телеграм", "telegram", "проводник", "explorer", "блокнот", "notepad"]:
-                return {
-                    "action": "app_type",
-                    "target": "search",
-                    "parameters": {
-                        "app_name": app_raw,
-                        "text": m_app_search.group(2).strip(),
-                        "search_mode": True,
-                        "submit": True
-                    }
-                }
+        min_match = re.search(r"^(?:сверни|сверни окно)\s*(.*)", q)
+        if min_match and not any(w in q for w in ["все", "всё"]):
+            target_app = min_match.group(1).strip()
+            return {
+                "action": "window_control",
+                "target": "minimize",
+                "parameters": {"app_name": target_app}
+            }
 
+        max_match = re.search(r"^(?:разверни|разверни окно|на весь экран)\s*(.*)", q)
+        if max_match:
+            target_app = max_match.group(1).strip()
+            return {
+                "action": "window_control",
+                "target": "maximize",
+                "parameters": {"app_name": target_app}
+            }
 
-        # 6.2 Ввод текста в блокнот или любое приложение: «в блокноте напиши [текст]», «открой блокнот и напиши [текст]»
-        m_app_type = re.search(
-            r"(?:в|во|открой)\s+([a-zA-Zа-яА-Я0-9_.-]+)\s+(?:и\s+)?(?:напиши|напечатай|введи|вставь)\s+(.+)",
-            cleaned_raw,
-            flags=re.IGNORECASE
-        )
-        if not m_app_type:
-            m_app_type = re.search(
-                r"(?:напиши|напечатай|введи|вставь)\s+(?:в|во)\s+([a-zA-Zа-яА-Я0-9_.-]+)\s+(.+)",
-                cleaned_raw,
-                flags=re.IGNORECASE
-            )
-        if m_app_type:
-            app_raw = m_app_type.group(1).lower()
-            if "antigravity" not in app_raw and "антигравити" not in app_raw:
-                return {
-                    "action": "app_type",
-                    "target": "type",
-                    "parameters": {
-                        "app_name": self._normalize_site_name(app_raw),
-                        "text": m_app_type.group(2).strip(),
-                        "search_mode": False,
-                        "submit": False
-                    }
-                }
+        # 6. Безопасность и управление питанием ПК
+        if any(w in q for w in ["заблокируй компьютер", "заблокируй пк", "заблокируй экран"]):
+            return {"action": "system_action", "target": "lock_workstation", "parameters": {}}
 
-        # 7. Специфические страницы сайтов (многословные URL из commands.json)
+        if any(w in q for w in ["выключи компьютер", "выключи пк", "выключи ноутбук", "заверши работу"]):
+            return {"action": "system_action", "target": "shutdown", "parameters": {"dangerous": True}}
 
-        # Сортируем по убыванию длины, чтобы составные («сообщения вк») проверялись до («вк»)
-        multi_word_urls = [(k, v) for k, v in self.url_map.items() if " " in k]
-        multi_word_urls.sort(key=lambda x: len(x[0]), reverse=True)
-        norm_text = re.sub(r"\b(в|во|на|к)\b", " ", text)
-        norm_text = re.sub(r"\s+", " ", norm_text).strip()
+        if any(w in q for w in ["перезагрузи компьютер", "перезагрузи пк", "перезагрузи ноутбук", "перезагрузка"]):
+            return {"action": "system_action", "target": "restart", "parameters": {"dangerous": True}}
 
-        for site_key, site_url in multi_word_urls:
-            if site_key in text or site_key in norm_text:
-                return {
-                    "action": "open_url",
-                    "target": site_url,
-                    "parameters": {"site": site_key}
-                }
-            key_words = site_key.split()
-            all_present = True
-            for kw in key_words:
-                kw_stem = kw[:-1] if len(kw) >= 5 else kw
-                if not any(w.startswith(kw_stem) for w in words):
-                    all_present = False
-                    break
-            if all_present:
-                return {
-                    "action": "open_url",
-                    "target": site_url,
-                    "parameters": {"site": site_key}
-                }
+        # 7. Ввод текста в активное приложение
+        type_match = re.search(r"^(?:в|внутри)\s+([a-zA-Zа-яА-Я0-9_.-]+)\s+(?:напиши|введи|напечатай)\s+(.+)", q)
+        if type_match:
+            app_raw = type_match.group(1).strip()
+            if app_raw.endswith("е") and len(app_raw) > 3:
+                app_name = app_raw[:-1]
+            else:
+                app_name = app_raw
+            text_to_type = type_match.group(2).strip()
+            return {
+                "action": "app_type",
+                "target": "type",
+                "parameters": {"app_name": app_name, "text": text_to_type, "submit": False, "search_mode": False}
+            }
 
-        # 6. Прямые доменные имена и ссылки (например: «открой vk.com в браузере»)
-        # Проверяются ДО списка приложений, чтобы слова вроде «браузер» не перехватывали URL
-        domain_match = re.search(
-            r'([a-zA-Z0-9-]+\.(?:com|ru|org|net|io|dev|ai|me|info|biz|рф)(?:/[^\s]*)?)',
-            text,
-            flags=re.IGNORECASE
-        )
-        if domain_match:
-            dom = domain_match.group(1).strip()
-            target_url = f"https://{dom}" if not dom.startswith("http") else dom
+        # 8. Быстрый веб-поиск в Google
+        google_match = re.search(r"^(?:найди|поищи)\s+(?:в\s+гугле|в\s+google)\s+(.+)", q)
+        if google_match:
+            search_query = google_match.group(1).strip()
             return {
                 "action": "open_url",
-                "target": target_url,
-                "parameters": {"domain": dom}
+                "target": f"https://www.google.com/search?q={search_query}",
+                "parameters": {"query": search_query}
             }
 
-        # 7. Запуск программ (из commands.json)
-        # Проверяется ДО общего поиска/медиа, чтобы «включи калькулятор» открывало calc.exe
-        for name, cmd in self.app_map.items():
-            matches = any(
-                w == name or (len(name) >= 4 and w.startswith(name[:-1]))
-                for w in words
-            )
-            if name in text or matches:
+        # 9. Быстрые ссылки на популярные разделы сайтов
+        subpages_map = {
+            "сообщения вк": "https://vk.com/im",
+            "сообщения в вк": "https://vk.com/im",
+            "подписки на ютубе": "https://www.youtube.com/feed/subscriptions",
+            "подписки на youtube": "https://www.youtube.com/feed/subscriptions",
+            "тренды гитхаб": "https://github.com/trending",
+            "тренды github": "https://github.com/trending",
+            "входящие в почте": "https://mail.google.com/mail/u/0/#inbox",
+            "входящие на почте": "https://mail.google.com/mail/u/0/#inbox",
+        }
+        for sub_key, sub_url in subpages_map.items():
+            if sub_key in q:
+                return {
+                    "action": "open_url",
+                    "target": sub_url,
+                    "parameters": {"section": sub_key}
+                }
+
+        # 10. Открытие простых известных сайтов (без внутреннего поиска)
+        open_url_match = re.search(r"^(?:открой|перейди на|зайди на)\s+([a-zA-Zа-яА-Я0-9_.-]+)(?:\s+(?:в|через)\s+(?:браузере|браузер|хроме|хром))?$", q)
+        if open_url_match:
+            site_key = open_url_match.group(1).lower()
+            if site_key in self.url_map:
+                return {
+                    "action": "open_url",
+                    "target": self.url_map[site_key],
+                    "parameters": {"site": site_key}
+                }
+            if "." in site_key and not site_key.endswith(".exe"):
+                url = site_key if site_key.startswith("http") else f"https://{site_key}"
+                return {
+                    "action": "open_url",
+                    "target": url,
+                    "parameters": {"domain": site_key}
+                }
+
+        # 11. Запуск приложений по точным системным алиасам (без параметров)
+        launch_match = re.search(r"^(?:открой|запусти|включи)\s+([a-zA-Zа-яА-Я0-9_.-]+)$", q)
+        if launch_match:
+            app_key = launch_match.group(1).lower()
+            if app_key in self.app_map:
                 return {
                     "action": "launch_app",
-                    "target": cmd,
-                    "parameters": {"app_name": name}
-                }
-
-        # 8. Поиск в Google (если явно упомянут Google / в гугле)
-        if "в гугле" in text or "гугл" in text or "google" in text:
-            query_part = re.sub(r"^(найди в гугле|поищи в гугле|найди|поищи|гугл)\s+", "", cleaned_raw, flags=re.IGNORECASE)
-            query_part = re.sub(r"\b(?:в гугле|в google|гугл|google)\b", "", query_part, flags=re.IGNORECASE).strip()
-            return {
-                "action": "open_url",
-                "target": f"https://www.google.com/search?q={query_part}",
-                "parameters": {"query": query_part}
-            }
-
-        # 9. Универсальный поиск по конкретному сайту / сервису (Кинопоиск, Авито, Озон, Википедия и др.)
-        site_search_action = self._parse_site_search(cleaned_raw)
-        if site_search_action:
-            return site_search_action
-
-        # 10. YouTube (поиск, каналы, прямое воспроизведение треков/видео)
-        has_yt_keyword = bool(re.search(r"(?:ютуб\w*|youtube)", text))
-        has_play_intent = bool(re.search(
-            r"\b(?:включи\w*|поставь|воспроизведи|вруби|запусти|послушать|слушать|глянуть|посмотреть)\b",
-            text
-        ))
-        has_media_noun = bool(re.search(
-            r"\b(?:видео|ролик|клип|песн\w*|трек|фильм)\b",
-            text
-        ))
-
-
-        if has_yt_keyword or has_play_intent or (has_media_noun and not any(w in text for w in ["пауза", "стоп", "громк"])):
-            is_latest = bool(re.search(r"\b(?:последн\w*|свеж\w*|нов\w*|крайн\w*)\b", text))
-            is_search_only = bool(re.search(r"\b(?:найди|поищи|список)\b", text)) and not has_play_intent
-            is_direct_play = not is_search_only and (has_play_intent or has_media_noun or is_latest)
-
-            # Извлекаем тему / поисковый запрос
-            search_query = cleaned_raw
-            # Очищаем упоминание сервиса
-            search_query = re.sub(r"(?:на\s+|в\s+)?(?:ютуб\w*|youtube)", "", search_query, flags=re.IGNORECASE)
-            # Очищаем глаголы
-            search_query = re.sub(
-                r"\b(?:открой|запусти|включи\w*|поставь|воспроизведи|вруби|найди|поищи|покажи|послушать|слушать|глянуть|посмотреть)\b",
-                "",
-                search_query,
-                flags=re.IGNORECASE
-            )
-            # Очищаем медиа-существительные
-            search_query = re.sub(r"\b(?:видео|ролик|клип|песн\w*|трек|фильм)\b", "", search_query, flags=re.IGNORECASE)
-            # Очищаем слова свежести
-            if is_latest:
-                search_query = re.sub(r"\b(?:последн\w*|свеж\w*|нов\w*|крайн\w*)\b", "", search_query, flags=re.IGNORECASE)
-            # Очищаем вводные слова
-            search_query = re.sub(r"\b(?:пожалуйста|плиз|там|в браузере|и)\b", "", search_query, flags=re.IGNORECASE)
-            search_query = re.sub(r"\s+", " ", search_query).strip()
-
-            if search_query:
-                target_url = f"https://www.youtube.com/results?search_query={search_query}"
-                if is_latest:
-                    target_url += "&sp=CAI%253D"
-                return {
-                    "action": "open_url",
-                    "target": target_url,
-                    "parameters": {
-                        "query": search_query,
-                        "direct_play": is_direct_play,
-                        "sort_by_date": is_latest
-                    }
-                }
-            if has_yt_keyword:
-                return {
-                    "action": "open_url",
-                    "target": "https://www.youtube.com",
-                    "parameters": {}
-                }
-
-        # 10. Общий поиск в Google («найди ...», «поищи ...»)
-        if text.startswith("найди") or text.startswith("поищи"):
-            query_part = re.sub(r"^(найди|поищи)\s+", "", cleaned_raw, flags=re.IGNORECASE).strip()
-            return {
-                "action": "open_url",
-                "target": f"https://www.google.com/search?q={query_part}",
-                "parameters": {"query": query_part}
-            }
-
-        # 11. Однословные URL из commands.json («ютуб», «вк», «гитхаб», «почта»)
-        single_word_urls = [(k, v) for k, v in self.url_map.items() if " " not in k]
-        for site_key, site_url in single_word_urls:
-            matches = any(
-                w == site_key or (len(site_key) >= 4 and w.startswith(site_key[:-1]))
-                for w in words
-            )
-            if site_key in text or matches:
-                return {
-                    "action": "open_url",
-                    "target": site_url,
-                    "parameters": {"site": site_key}
-                }
-
-
-
-        # 7. Потенциально опасные команды (требующие подтверждения)
-        if any(kw in text for kw in ["выключи ноутбук", "выключи компьютер", "заверши работу"]):
-            return {
-                "action": "system_action",
-                "target": "shutdown",
-                "parameters": {"dangerous": True}
-            }
-        if any(kw in text for kw in ["перезагрузи", "перезагрузка"]):
-            return {
-                "action": "system_action",
-                "target": "restart",
-                "parameters": {"dangerous": True}
-            }
-
-        # 8. Локальная LLM (Qwen2.5 1.5B) при наличии файла весов
-        if self.is_llm_available():
-            llm_result = self._parse_with_llm(cleaned_raw)
-            if llm_result.get("action") != "unknown":
-                return llm_result
-
-        # 9. Неизвестная команда
-        return {
-            "action": "unknown",
-            "target": text,
-            "parameters": {}
-        }
-
-    def _normalize_site_name(self, name: str) -> str:
-        """Нормализует падежное окончание названия сайта (например: «кинопоиске» -> «кинопоиск», «википедии» -> «википедия»)."""
-        n = name.lower().strip()
-        if n.endswith("ии") and len(n) > 4:
-            return n[:-2] + "ия"
-        if n.endswith("е") and len(n) > 4:
-            return n[:-1]
-        return n
-
-
-    def _parse_site_search(self, cleaned_raw: str) -> Optional[dict[str, Any]]:
-        """
-        Распознает универсальный поиск по конкретному сайту или сервису.
-        Примеры:
-        - «На Кинопоиске найди фильм Начало»
-        - «Найди на Авито велосипед»
-        - «В Википедии найди квантовую физику»
-        - «На Озоне найди кофеварку»
-        """
-        excluded_sites = {
-            "гугле", "гугл", "google", "ютубе", "ютуб", "youtube",
-            "браузере", "интернете", "сети", "компе", "компьютере"
-        }
-
-        # Шаблон 1: «на/в <сайт> найди/включи <запрос>»
-        m1 = re.search(
-            r"^(?:на|в|во)\s+([a-zA-Zа-яА-Я0-9_.-]+)\s+(?:найди|поищи|покажи|включи|открой|вруби|поставь)\s+(.+)",
-            cleaned_raw,
-            flags=re.IGNORECASE
-        )
-        if m1:
-            site_raw = m1.group(1).lower()
-            if site_raw not in excluded_sites:
-                site_norm = self._normalize_site_name(site_raw)
-                query = m1.group(2).strip()
-                return {
-                    "action": "chrome_cdp",
-                    "target": "search",
-                    "parameters": {"site": site_norm, "query": query, "click_first": False}
-                }
-
-        # Шаблон 2: «найди/включи на/в <сайт> <запрос>»
-        m2 = re.search(
-            r"^(?:найди|поищи|покажи|включи|открой|вруби|поставь)\s+(?:на|в|во)\s+([a-zA-Zа-яА-Я0-9_.-]+)\s+(.+)",
-            cleaned_raw,
-            flags=re.IGNORECASE
-        )
-        if m2:
-            site_raw = m2.group(1).lower()
-            if site_raw not in excluded_sites:
-                site_norm = self._normalize_site_name(site_raw)
-                query = m2.group(2).strip()
-                return {
-                    "action": "chrome_cdp",
-                    "target": "search",
-                    "parameters": {"site": site_norm, "query": query, "click_first": False}
+                    "target": self.app_map[app_key],
+                    "parameters": {"app_name": app_key}
                 }
 
         return None
-
-    def _parse_with_llm(self, query: str) -> dict[str, Any]:
-
-        """Инференс локальной нейросети Qwen2.5 GGUF для семантического роутинга и ответов."""
-        if not self._is_loaded or self._llm is None:
-            ok = self.load_model()
-            if not ok or self._llm is None:
-                return {"action": "unknown", "target": query, "parameters": {}}
-
-        schema = {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": [
-                        "launch_app",
-                        "open_url",
-                        "antigravity_gui",
-                        "antigravity_cli",
-                        "set_volume",
-                        "media_control",
-                        "system_action",
-                        "general_answer",
-                        "unknown"
-                    ]
-                },
-                "target": {"type": "string"},
-                "parameters": {"type": "object"}
-            },
-            "required": ["action", "target", "parameters"]
-        }
-
-        system_prompt = (
-            "Ты — интеллектуальный диспетчер команд голосового ассистента Windows. "
-            "Пользователь говорит по-русски. Твоя задача — вернуть строго JSON объект действия.\n"
-            "Примеры:\n"
-            "- 'открой калькулятор' -> {\"action\": \"launch_app\", \"target\": \"calc.exe\", \"parameters\": {\"app_name\": \"калькулятор\"}}\n"
-            "- 'открой блокнот' -> {\"action\": \"launch_app\", \"target\": \"notepad.exe\", \"parameters\": {\"app_name\": \"блокнот\"}}\n"
-            "- 'включи музыку' -> {\"action\": \"media_control\", \"target\": \"play_pause\", \"parameters\": {}}\n"
-            "- 'громкость 50' -> {\"action\": \"set_volume\", \"target\": \"absolute\", \"parameters\": {\"percent\": 50}}\n"
-            "- 'сделай тише' -> {\"action\": \"set_volume\", \"target\": \"step_down\", \"parameters\": {\"step\": 10}}\n"
-            "- 'найди в гугле питон' -> {\"action\": \"open_url\", \"target\": \"https://www.google.com/search?q=питон\", \"parameters\": {\"query\": \"питон\"}}\n"
-            "- 'открой ютуб' -> {\"action\": \"open_url\", \"target\": \"https://youtube.com\", \"parameters\": {}}\n"
-            "- 'открой вк' -> {\"action\": \"open_url\", \"target\": \"https://vk.com\", \"parameters\": {\"site\": \"вк\"}}\n"
-            "- 'открой vk.com в браузере' -> {\"action\": \"open_url\", \"target\": \"https://vk.com\", \"parameters\": {\"domain\": \"vk.com\"}}\n"
-            "- 'открой антигравити' -> {\"action\": \"antigravity_gui\", \"target\": \"open\", \"parameters\": {}}\n"
-            "- 'создай новый чат в антигравити' -> {\"action\": \"antigravity_gui\", \"target\": \"new_chat\", \"parameters\": {}}\n"
-            "- 'напиши в антигравити напиши скрипт' -> {\"action\": \"antigravity_gui\", \"target\": \"prompt\", \"parameters\": {\"prompt\": \"напиши скрипт\", \"new_chat\": true}}\n"
-            "- 'запусти в agy тесты' -> {\"action\": \"antigravity_cli\", \"target\": \"launch\", \"parameters\": {\"prompt\": \"agy тесты\"}}\n"
-            "- 'сколько будет два плюс два' -> {\"action\": \"general_answer\", \"target\": \"answer\", \"parameters\": {\"text\": \"Четыре.\"}}\n"
-            "ПРАВИЛА:\n"
-            "1. Для любых команд управления (открыть, запустить, найти, громкость, звук, трек, антигравити) ВСЕГДА выбирай системное действие!\n"
-            "2. Для любых сайтов, доменов (.com, .ru) и соцсетей (вк, ютуб, github) ВСЕГДА используй open_url со ссылкой https://, а не launch_app!\n"
-            "3. Никогда не используй 'general_answer' для команд запуска или управления!\n"
-            "4. Для вопросов отвечай 'general_answer' СТРОГО одним кратким предложением (до 10-12 слов), без вступительных слов и без монологов."
-        )
-
-        try:
-            resp = self._llm.create_chat_completion(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": query}
-                ],
-                response_format={"type": "json_object", "schema": schema},
-                max_tokens=64,
-                temperature=0.0
-            )
-            content = resp["choices"][0]["message"]["content"].strip()
-            data = json.loads(content)
-            action = data.get("action", "unknown")
-
-            # Защита от длинных ответов при general_answer
-            if action == "general_answer":
-                params = data.get("parameters", {})
-                raw_text = params.get("text", "") or data.get("target", "")
-
-                # Если запрос содержал глаголы действия, перенаправляем в поиск вместо чтения лекции
-                cmd_verbs = ["открой", "запусти", "включи", "найди", "поищи", "поставь"]
-                if any(v in query.lower() for v in cmd_verbs):
-                    return {
-                        "action": "open_url",
-                        "target": f"https://www.google.com/search?q={query}",
-                        "parameters": {"query": query}
-                    }
-
-                # Оставляем ровно 1 первое предложение (до 100 символов)
-                sentences = re.split(r"(?<=[.!?])\s+", str(raw_text).strip())
-                short_text = sentences[0] if sentences else str(raw_text).strip()
-                if len(short_text) > 100:
-                    short_text = short_text[:97] + "..."
-                params["text"] = short_text
-                data["parameters"] = params
-
-            return data
-        except Exception:
-            try:
-                # Запасной вариант если response_format со схемой не поддерживается
-                resp = self._llm.create_chat_completion(
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": query}
-                    ],
-                    max_tokens=64,
-                    temperature=0.0
-                )
-                content = resp["choices"][0]["message"]["content"].strip()
-                match = re.search(r"\{.*\}", content, re.DOTALL)
-                if match:
-                    data = json.loads(match.group(0))
-                    if isinstance(data, dict) and "action" in data:
-                        return data
-            except Exception:
-                pass
-
-            # Если была команда, перенаправляем в веб-поиск
-            cmd_verbs = ["открой", "запусти", "включи", "найди", "поищи"]
-            if any(v in query.lower() for v in cmd_verbs):
-                return {
-                    "action": "open_url",
-                    "target": f"https://www.google.com/search?q={query}",
-                    "parameters": {"query": query}
-                }
-
-            return {
-                "action": "unknown",
-                "target": query,
-                "parameters": {}
-            }

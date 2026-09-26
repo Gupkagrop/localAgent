@@ -10,7 +10,7 @@ import time
 import ctypes
 import subprocess
 import webbrowser
-from typing import Optional, Callable
+from typing import Optional, Callable, Any
 import win32gui
 import win32con
 import win32clipboard
@@ -35,10 +35,12 @@ class CommandExecutor:
     def __init__(
         self,
         audio_ducker: Optional[AudioDucker] = None,
-        on_log: Optional[Callable[[str], None]] = None
+        on_log: Optional[Callable[[str], None]] = None,
+        vision_manager: Optional[Any] = None
     ):
         self.audio_ducker = audio_ducker or AudioDucker()
         self.on_log = on_log
+        self.vision_manager = vision_manager
         self.app_controller = DesktopAppController(on_log=self.log)
         self.commands_config = self._load_commands_config()
         antigravity_cfg = self.commands_config.get("antigravity", {})
@@ -202,8 +204,39 @@ class CommandExecutor:
                     return False, f"Ошибка перезагрузки: {e}"
             return True, "Действие отменено"
 
+        # 12. Автономный Vision Computer-Use Agent (Jedi-3B / Qwen2.5-VL)
+        if action == "vision_agent":
+            return self._handle_vision_agent(command)
+
         self.log(f"Неизвестная команда: {target}")
         return False, "Команда не распознана"
+
+    def _handle_vision_agent(self, command: dict) -> tuple[bool, str]:
+        """
+        Запускает автономного Vision-агента для интерактивного выполнения задачи в интерфейсе.
+        """
+        params = command.get("parameters", {})
+        prompt = params.get("prompt", "") or str(command.get("target", ""))
+
+        if not prompt or prompt == "computer_use":
+            prompt = str(params.get("text", "") or command.get("text", ""))
+
+        if not prompt:
+            return False, "Отсутствует текст задачи для Vision-агента"
+
+        if self.vision_manager is None:
+            self.log(f"Предупреждение: Vision-агент не подключен, задача: «{prompt}»")
+            return False, "Vision-агент не подключен"
+
+        if not self.vision_manager.is_running():
+            self.log("Инициализация и запуск фонового процесса Vision-агента...")
+            self.vision_manager.start()
+
+        self.log(f"Задача передана автономному Vision-агенту: «{prompt}»")
+        ok = self.vision_manager.execute_task(prompt)
+        if ok:
+            return True, "Анализирую экран..."
+        return False, "Не удалось запустить выполнение задачи Vision-агентом"
 
     def _handle_antigravity_gui(self, target: str, params: dict) -> tuple[bool, str]:
         """Управляет окном Antigravity 2.0 (GUI)."""
