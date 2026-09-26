@@ -4,6 +4,7 @@
 медиаплеером, а также интеграцию с Antigravity CLI и Antigravity 2.0 GUI.
 """
 import os
+import re
 import json
 import time
 import ctypes
@@ -102,6 +103,23 @@ class CommandExecutor:
 
         # 5. Запуск сторонних приложений
         if action == "launch_app":
+            target_str = str(target).strip()
+            # Автоматическая защита: если передана веб-ссылка или домен вместо локального exe
+            is_web_target = (
+                target_str.startswith("http://") or
+                target_str.startswith("https://") or
+                bool(re.search(r"^[a-zA-Z0-9-]+\.(?:com|ru|org|net|io|dev|ai|me)", target_str, re.IGNORECASE))
+            )
+            if is_web_target:
+                if not target_str.startswith("http://") and not target_str.startswith("https://"):
+                    target_str = "https://" + target_str
+                try:
+                    webbrowser.open(target_str)
+                    self.log(f"Открыта ссылка в браузере (auto-redirect): {target_str}")
+                    return True, f"Открыто в браузере: {params.get('app_name', target_str)}"
+                except Exception as e:
+                    return False, f"Ошибка открытия ссылки: {e}"
+
             try:
                 os.startfile(target)
                 self.log(f"Запущено приложение: {target}")

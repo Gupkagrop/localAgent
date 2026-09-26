@@ -35,6 +35,9 @@ class DecisionEngine:
             "youtube": "https://youtube.com",
             "гитхаб": "https://github.com",
             "github": "https://github.com",
+            "вк": "https://vk.com",
+            "vk": "https://vk.com",
+            "вконтакте": "https://vk.com",
             "почта": "https://mail.google.com"
         }
         if os.path.exists(self.commands_path):
@@ -227,7 +230,43 @@ class DecisionEngine:
                 "parameters": {}
             }
 
-        # 5. Веб-поиск и сайты
+        # 5. Веб-поиск, YouTube и ссылки
+        # 5.1 Специальный обработчик YouTube (ютуб, ютубчик, youtube) с поиском и воспроизведением
+        if re.search(r"(?:ютуб\w*|youtube)", text):
+            # Проверяем наличие поискового запроса или намерения воспроизведения
+            search_query = ""
+            match_play = re.search(
+                r"(?:включи|найди|поищи|покажи|видео|клип|ролик|песн\w*|трек|фильм)\s+(?:там\s+)?(.+)",
+                cleaned_raw,
+                flags=re.IGNORECASE
+            )
+            if match_play:
+                search_query = match_play.group(1).strip()
+            else:
+                match_yt_tail = re.search(r"(?:ютуб\w*|youtube)\s+(.+)", cleaned_raw, flags=re.IGNORECASE)
+                if match_yt_tail:
+                    search_query = match_yt_tail.group(1).strip()
+
+            if search_query:
+                # Очищаем от служебных слов («на ютубе», «пожалуйста», «в браузере», «и»)
+                search_query = re.sub(r"(?:на\s+|в\s+)?(?:ютуб\w*|youtube)", "", search_query, flags=re.IGNORECASE)
+                search_query = re.sub(r"^(?:и\s+|включи\s+|найди\s+|поищи\s+|там\s+)+", "", search_query, flags=re.IGNORECASE)
+                search_query = re.sub(r"\b(?:пожалуйста|в браузере)\b", "", search_query, flags=re.IGNORECASE).strip()
+                search_query = re.sub(r"\s+", " ", search_query).strip()
+
+            if search_query:
+                return {
+                    "action": "open_url",
+                    "target": f"https://www.youtube.com/results?search_query={search_query}",
+                    "parameters": {"query": search_query}
+                }
+            return {
+                "action": "open_url",
+                "target": "https://www.youtube.com",
+                "parameters": {}
+            }
+
+        # 5.2 Поиск в Google
         if text.startswith("найди в гугле") or text.startswith("поищи") or text.startswith("найди"):
             query_part = re.sub(r"^(найди в гугле|поищи|найди)\s+", "", cleaned_raw, flags=re.IGNORECASE).strip()
             return {
@@ -235,21 +274,26 @@ class DecisionEngine:
                 "target": f"https://www.google.com/search?q={query_part}",
                 "parameters": {"query": query_part}
             }
-        if "ютуб" in text or "youtube" in text:
-            match_yt = re.search(r"(ютуб|youtube)\s+(.+)", cleaned_raw, flags=re.IGNORECASE)
-            if match_yt:
-                return {
-                    "action": "open_url",
-                    "target": f"https://www.youtube.com/results?search_query={match_yt.group(2).strip()}",
-                    "parameters": {}
-                }
+
+        # 5.3 Прямые доменные имена и ссылки (например: «открой vk.com в браузере»)
+        # Проверяются ДО списка приложений, чтобы слова вроде «браузер» не перехватывали URL
+        domain_match = re.search(
+            r'([a-zA-Z0-9-]+\.(?:com|ru|org|net|io|dev|ai|me|info|biz|рф)(?:/[^\s]*)?)',
+            text,
+            flags=re.IGNORECASE
+        )
+        if domain_match:
+            dom = domain_match.group(1).strip()
+            target_url = f"https://{dom}" if not dom.startswith("http") else dom
             return {
                 "action": "open_url",
-                "target": "https://www.youtube.com",
-                "parameters": {}
+                "target": target_url,
+                "parameters": {"domain": dom}
             }
-        # Динамические URL из commands.json
-        words = text.split()
+
+        # 5.4 Динамические URL из commands.json
+        # Очищаем слова от знаков препинания для точного совпадения («вк,» -> «вк»)
+        words = [re.sub(r"[^\w-]", "", w) for w in text.split()]
         for site_key, site_url in self.url_map.items():
             matches = any(
                 w == site_key or (len(site_key) >= 4 and w.startswith(site_key[:-1]))
@@ -343,6 +387,8 @@ class DecisionEngine:
             "- 'сделай тише' -> {\"action\": \"set_volume\", \"target\": \"step_down\", \"parameters\": {\"step\": 10}}\n"
             "- 'найди в гугле питон' -> {\"action\": \"open_url\", \"target\": \"https://www.google.com/search?q=питон\", \"parameters\": {\"query\": \"питон\"}}\n"
             "- 'открой ютуб' -> {\"action\": \"open_url\", \"target\": \"https://youtube.com\", \"parameters\": {}}\n"
+            "- 'открой вк' -> {\"action\": \"open_url\", \"target\": \"https://vk.com\", \"parameters\": {\"site\": \"вк\"}}\n"
+            "- 'открой vk.com в браузере' -> {\"action\": \"open_url\", \"target\": \"https://vk.com\", \"parameters\": {\"domain\": \"vk.com\"}}\n"
             "- 'открой антигравити' -> {\"action\": \"antigravity_gui\", \"target\": \"open\", \"parameters\": {}}\n"
             "- 'создай новый чат в антигравити' -> {\"action\": \"antigravity_gui\", \"target\": \"new_chat\", \"parameters\": {}}\n"
             "- 'напиши в антигравити напиши скрипт' -> {\"action\": \"antigravity_gui\", \"target\": \"prompt\", \"parameters\": {\"prompt\": \"напиши скрипт\", \"new_chat\": true}}\n"
@@ -350,8 +396,9 @@ class DecisionEngine:
             "- 'сколько будет два плюс два' -> {\"action\": \"general_answer\", \"target\": \"answer\", \"parameters\": {\"text\": \"Четыре.\"}}\n"
             "ПРАВИЛА:\n"
             "1. Для любых команд управления (открыть, запустить, найти, громкость, звук, трек, антигравити) ВСЕГДА выбирай системное действие!\n"
-            "2. Никогда не используй 'general_answer' для команд запуска или управления!\n"
-            "3. Для вопросов отвечай 'general_answer' СТРОГО одним кратким предложением (до 10-12 слов), без вступительных слов и без монологов."
+            "2. Для любых сайтов, доменов (.com, .ru) и соцсетей (вк, ютуб, github) ВСЕГДА используй open_url со ссылкой https://, а не launch_app!\n"
+            "3. Никогда не используй 'general_answer' для команд запуска или управления!\n"
+            "4. Для вопросов отвечай 'general_answer' СТРОГО одним кратким предложением (до 10-12 слов), без вступительных слов и без монологов."
         )
 
         try:

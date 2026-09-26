@@ -7,6 +7,7 @@
 - Фоновое распознавание ключевого слова («Джарвис») без блокировки аудиопотока
 """
 import time
+import re
 import threading
 from typing import Callable, Optional
 import numpy as np
@@ -31,7 +32,7 @@ class AudioListener:
         # Режимы работы: "idle", "wake_listen", "recording"
         self._mode = "idle"
         self._wake_words = ("джарвис", "jarvis")
-        self._on_wake_detected: Optional[Callable[[], None]] = None
+        self._on_wake_detected: Optional[Callable] = None
         self._stt_engine = None
 
         # Параметры записи команды
@@ -42,12 +43,13 @@ class AudioListener:
         self._record_start_time = 0.0
         self._max_duration_sec = 8.0
 
-        # Пороги энергии речи и тишины (0.004 обеспечивает естественный захват с ноутбука)
-        self.speech_energy_threshold = 0.004
-        self.silence_threshold_ms = 450
+        # Пороги энергии речи и тишины (0.002 обеспечивает надежный захват с микрофона ноутбука)
+        self.speech_energy_threshold = 0.002
+        self.silence_threshold_ms = 400
 
         # Буфер для фонового Wake Word
         self._wake_buffer: list[np.ndarray] = []
+        self._wake_pre_buffer: list[np.ndarray] = []
         self._wake_speech_active = False
         self._wake_silence_start: Optional[float] = None
         self._is_checking_wake = False
@@ -143,28 +145,34 @@ class AudioListener:
             self._record_done_event.set()
 
     def _process_wake_word(self, chunk: np.ndarray, rms: float):
-        """Отслеживает ключевое слово «Джарвис» без блокировки аудиопотока."""
-        if self._is_checking_wake:
-            return
-
-        is_speech = rms > self.speech_energy_threshold
+        """Отслеживает ключевое слово («Джарвис») без блокировки аудиопотока."""
         now = time.time()
+        is_speech = rms > self.speech_energy_threshold
+
+        # Сохраняем короткий кольцевой буфер до начала речи (чтобы не срезать первый согласный звук)
+        if not self._wake_speech_active:
+            self._wake_pre_buffer.append(chunk)
+            if len(self._wake_pre_buffer) > int(SAMPLE_RATE * 0.15 / CHUNK_SIZE):
+                self._wake_pre_buffer.pop(0)
 
         if is_speech:
-            self._wake_speech_active = True
+            if not self._wake_speech_active:
+                self._wake_speech_active = True
+                self._wake_buffer.extend(self._wake_pre_buffer)
+                self._wake_pre_buffer.clear()
             self._wake_silence_start = None
             self._wake_buffer.append(chunk)
-            # Ограничиваем буфер фразы до 2.5 секунд
-            if len(self._wake_buffer) > int(SAMPLE_RATE * 2.5 / CHUNK_SIZE):
+            # Ограничиваем буфер фразы до 3.5 секунд (чтобы вместить фразу целиком)
+            if len(self._wake_buffer) > int(SAMPLE_RATE * 3.5 / CHUNK_SIZE):
                 self._wake_buffer.pop(0)
         else:
             if self._wake_speech_active:
                 self._wake_buffer.append(chunk)
                 if self._wake_silence_start is None:
                     self._wake_silence_start = now
-                elif (now - self._wake_silence_start) * 1000 > 300:
-                    # Фраза завершилась - запускаем проверку в отдельном потоке
-                    if len(self._wake_buffer) >= int(SAMPLE_RATE * 0.35 / CHUNK_SIZE):
+                elif (now - self._wake_silence_start) * 1000 > 320:
+                    # Фраза завершилась - запускаем проверку слова-триггера
+                    if len(self._wake_buffer) >= int(SAMPLE_RATE * 0.25 / CHUNK_SIZE):
                         audio_candidate = np.concatenate(self._wake_buffer)
                         self._wake_buffer = []
                         self._wake_speech_active = False
@@ -173,16 +181,54 @@ class AudioListener:
                     else:
                         self._wake_buffer = []
                         self._wake_speech_active = False
+                        self._wake_silence_start = None
 
     def _async_check_wake_word(self, audio: np.ndarray):
         """Асинхронный инференс STT для проверки слова-триггера."""
+        if self._is_checking_wake:
+            return
+
         def worker():
             self._is_checking_wake = True
             try:
                 if self._stt_engine and self._mode == "wake_listen":
                     text = self._stt_engine.transcribe(audio).lower().strip()
-                    if any(w in text for w in self._wake_words):
-                        if self._on_wake_detected:
+                    if not text:
+                        return
+
+                    # Очищаем от знаков препинания для пословного анализа
+                    clean_text = re.sub(r"[^\w\s]", " ", text)
+                    words = clean_text.split()
+
+                    # Проверяем совпадение со словом-триггером
+                    matched = False
+                    for w in self._wake_words:
+                        w_lower = w.lower()
+                        # Прямое совпадение
+                        if w_lower in text or w_lower in words:
+                            matched = True
+                            break
+                        # Нечеткое совпадение по корню для вариантов Whisper (жарвис, джарвиз, ярвис)
+                        if len(w_lower) >= 4 and any(
+                            word.startswith(w_lower[:4]) or w_lower.startswith(word[:4])
+                            for word in words if len(word) >= 4
+                        ):
+                            matched = True
+                            break
+
+                    if matched and self._on_wake_detected:
+                        # Проверяем, была ли команда сказана в той же фразе («Джарвис открой ютуб»)
+                        tail_cmd = ""
+                        pattern = rf"(?:^|\s)(?:{'|'.join(re.escape(w) for w in self._wake_words)})\w*[\s,]+(.+)"
+                        match_tail = re.search(pattern, text, flags=re.IGNORECASE)
+                        if match_tail:
+                            candidate = match_tail.group(1).strip()
+                            if len(candidate.split()) >= 1:
+                                tail_cmd = candidate
+
+                        try:
+                            self._on_wake_detected(tail_cmd)
+                        except TypeError:
                             self._on_wake_detected()
             except Exception:
                 pass

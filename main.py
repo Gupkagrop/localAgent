@@ -29,7 +29,7 @@ from create_shortcut import create_desktop_shortcut
 
 class AppCoordinator(QObject):
     # Сигналы для безопасного межпоточного взаимодействия с GUI PyQt6
-    request_voice_input_signal = pyqtSignal()
+    request_voice_input_signal = pyqtSignal(str)
     request_spotlight_signal = pyqtSignal()
     prompt_start_agent_signal = pyqtSignal()
     vu_meter_signal = pyqtSignal(float)
@@ -207,9 +207,14 @@ class AppCoordinator(QObject):
         wake_enabled = self.window.settings.get("wake_word_enabled", True)
         if mode == "wake_word_and_copilot" and wake_enabled and self.is_agent_running:
             configured_ww = self.window.settings.get("wake_word", "джарвис").strip().lower()
-            wake_words = tuple(dict.fromkeys([configured_ww, "джарвис", "jarvis"]))
+            if configured_ww in ("джарвис", "jarvis"):
+                # Расширяем фонетическими вариациями распознавания Whisper
+                wake_variants = ["джарвис", "жарвис", "ярвис", "джарвиз", "чарвис", "гарвис", "jarvis"]
+            else:
+                wake_variants = [configured_ww]
+            wake_words = tuple(dict.fromkeys(wake_variants))
             self.listener.start_wake_word_loop(
-                on_wake_detected=self.request_voice_input_signal.emit,
+                on_wake_detected=lambda cmd="": self.request_voice_input_signal.emit(cmd or ""),
                 stt_engine=self.stt,
                 wake_words=wake_words
             )
@@ -240,7 +245,7 @@ class AppCoordinator(QObject):
         """Событие одиночного клика клавиши Copilot из низкоуровневого потока."""
         self.hook.dismiss_search_window()
         if self.is_agent_running:
-            self.request_voice_input_signal.emit()
+            self.request_voice_input_signal.emit("")
         else:
             self.prompt_start_agent_signal.emit()
 
@@ -260,7 +265,7 @@ class AppCoordinator(QObject):
         )
         if reply == QMessageBox.StandardButton.Yes:
             self.toggle_agent(True)
-            self._handle_voice_input()
+            self._handle_voice_input("")
 
     def _show_window(self):
         self.window.show()
@@ -565,7 +570,7 @@ class AppCoordinator(QObject):
             self._apply_activation_mode()
             self.log("Ассистент активен и готов к командам.")
 
-    def _handle_voice_input(self):
+    def _handle_voice_input(self, pre_command: str = ""):
         """Запускает процесс записи и распознавания речи в отдельном потоке."""
         if self._is_processing_voice:
             return
@@ -573,36 +578,39 @@ class AppCoordinator(QObject):
         def worker():
             self._is_processing_voice = True
             try:
-                # 1. Сигнал и пилюля
-                self._play_sound("activate")
-                self.pill_listening_signal.emit()
-
-                # 2. Audio Ducking
-                if self.window.settings.get("audio_ducking_enabled", True):
-                    duck_level = float(self.window.settings.get("audio_ducking_level", 0.20))
-                    self.audio_ducker.duck(duck_factor=duck_level)
-
-                # 3. Запись звука
-                audio = self.listener.record_command()
-
-                # Восстанавливаем звук системы
-                if self.window.settings.get("audio_ducking_enabled", True):
-                    self.audio_ducker.unduck()
-
-                if len(audio) == 0:
-                    self.pill_error_signal.emit("Звук не обнаружен")
-                    self._play_sound("error")
-                    return
-
-                # 4. Распознавание речи (Faster-Whisper CUDA)
-                self.pill_text_signal.emit("Распознаю...")
-                text = self.stt.transcribe(audio)
+                text = pre_command.strip() if pre_command else ""
 
                 if not text:
-                    self.pill_error_signal.emit("Не удалось распознать")
-                    self._play_sound("error")
-                    self.log("Речь не распознана или была слишком тихой.")
-                    return
+                    # 1. Сигнал и пилюля
+                    self._play_sound("activate")
+                    self.pill_listening_signal.emit()
+
+                    # 2. Audio Ducking
+                    if self.window.settings.get("audio_ducking_enabled", True):
+                        duck_level = float(self.window.settings.get("audio_ducking_level", 0.20))
+                        self.audio_ducker.duck(duck_factor=duck_level)
+
+                    # 3. Запись звука
+                    audio = self.listener.record_command()
+
+                    # Восстанавливаем звук системы
+                    if self.window.settings.get("audio_ducking_enabled", True):
+                        self.audio_ducker.unduck()
+
+                    if len(audio) == 0:
+                        self.pill_error_signal.emit("Звук не обнаружен")
+                        self._play_sound("error")
+                        return
+
+                    # 4. Распознавание речи (Faster-Whisper CUDA)
+                    self.pill_text_signal.emit("Распознаю...")
+                    text = self.stt.transcribe(audio)
+
+                    if not text:
+                        self.pill_error_signal.emit("Не удалось распознать")
+                        self._play_sound("error")
+                        self.log("Речь не распознана или была слишком тихой.")
+                        return
 
                 self.pill_text_signal.emit(text)
                 self.log(f"Голос: «{text}»")

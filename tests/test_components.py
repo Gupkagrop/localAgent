@@ -80,6 +80,22 @@ class TestDecisionEngine(unittest.TestCase):
         self.assertEqual(res["action"], "open_url")
         self.assertIn("погода", res["target"])
 
+    def test_youtube_search_complex(self):
+        res = self.engine.parse_command("Открой, пожалуйста, ютубчик и включи там видео мармука.")
+        self.assertEqual(res["action"], "open_url")
+        self.assertIn("youtube.com/results?search_query=", res["target"])
+        self.assertIn("мармука", res["target"])
+
+    def test_vk_open_with_punctuation(self):
+        res = self.engine.parse_command("Открой ВК, пожалуйста.")
+        self.assertEqual(res["action"], "open_url")
+        self.assertEqual(res["target"], "https://vk.com")
+
+    def test_domain_in_browser(self):
+        res = self.engine.parse_command("Открой vk.com в браузере.")
+        self.assertEqual(res["action"], "open_url")
+        self.assertEqual(res["target"], "https://vk.com")
+
     def test_dangerous_action_confirmation(self):
         res = self.engine.parse_command("Выключи ноутбук")
         self.assertEqual(res["action"], "system_action")
@@ -122,6 +138,15 @@ class TestCoreModules(unittest.TestCase):
         executor = CommandExecutor()
         self.assertIn("Antigravity", executor.gui_window_names)
         self.assertEqual(executor.cli_executable, "agy")
+
+    def test_executor_launch_app_url_redirection(self):
+        executor = CommandExecutor()
+        cmd = {"action": "launch_app", "target": "vk.com", "parameters": {}}
+        import unittest.mock as mock
+        with mock.patch("webbrowser.open") as mock_open:
+            ok, msg = executor.execute(cmd)
+            self.assertTrue(ok)
+            mock_open.assert_called_once_with("https://vk.com")
 
 class TestConfigs(unittest.TestCase):
     def test_settings_integrity(self):
