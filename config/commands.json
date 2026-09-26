@@ -1,0 +1,25 @@
+{
+  "apps": {
+    "браузер": "chrome.exe",
+    "хром": "chrome.exe",
+    "калькулятор": "calc.exe",
+    "блокнот": "notepad.exe",
+    "проводник": "explorer.exe",
+    "диспетчер задач": "taskmgr.exe",
+    "телеграм": "telegram.exe",
+    "терминал": "wt.exe",
+    "antigravity": "antigravity"
+  },
+  "urls": {
+    "ютуб": "https://youtube.com",
+    "youtube": "https://youtube.com",
+    "гитхаб": "https://github.com",
+    "github": "https://github.com",
+    "почта": "https://mail.google.com",
+    "почту": "https://mail.google.com"
+  },
+  "antigravity": {
+    "gui_window_names": ["Antigravity", "antigravity"],
+    "cli_executable": "agy"
+  }
+}

@@ -1,0 +1,91 @@
+# ==============================================================================
+# .gitignore — Antigravity Voice Assistant
+# ==============================================================================
+
+# 1. Виртуальные окружения Python
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# 2. Байткод Python и файлы кэша
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+.Python
+*.so
+
+# 3. Веса и бинарные файлы локальных нейросетей (LLM / GGUF)
+# Исключаем тяжелые бинарные модели (например, Qwen2.5 1.5B ~1.1 ГБ)
+models/*
+!models/.gitkeep
+*.gguf
+*.bin
+*.pt
+*.pth
+*.onnx
+*.safetensors
+
+# 4. Логи, дампы и временные файлы выполнения
+logs/*
+!logs/.gitkeep
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+
+# 5. Системные файлы операционных систем
+# Windows
+Thumbs.db
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# 6. Настройки сред разработки (IDE) и редакторов
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+.project
+.pydevproject
+.settings/
+
+# 7. Конфиденциальные данные и переменные окружения
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# 8. Артефакты сборки, пакетирования и тестирования
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/

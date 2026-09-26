@@ -1,0 +1,19 @@
+[project]
+name = "antigravity-voice"
+version = "1.0.0"
+description = "Antigravity Voice Assistant for Windows with dedicated Copilot key hook"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "PyQt6>=6.7.0",
+    "sounddevice>=0.5.0",
+    "numpy>=1.26.0",
+    "scipy>=1.13.0",
+    "pycaw>=20240210",
+    "pywin32>=306",
+    "faster-whisper>=1.0.3",
+    "onnxruntime>=1.18.0",
+    "requests>=2.32.0",
+    "comtypes>=1.4.0",
+    "pynput>=1.7.7",
+]
