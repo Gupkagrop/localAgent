@@ -301,7 +301,12 @@ class DecisionEngine:
                 "parameters": {"query": query_part}
             }
 
-        # 9. YouTube (поиск, каналы, прямое воспроизведение треков/видео)
+        # 9. Универсальный поиск по конкретному сайту / сервису (Кинопоиск, Авито, Озон, Википедия и др.)
+        site_search_action = self._parse_site_search(cleaned_raw)
+        if site_search_action:
+            return site_search_action
+
+        # 10. YouTube (поиск, каналы, прямое воспроизведение треков/видео)
         has_yt_keyword = bool(re.search(r"(?:ютуб\w*|youtube)", text))
         has_play_intent = bool(re.search(
             r"\b(?:включи\w*|поставь|воспроизведи|вруби|запусти|послушать|слушать|глянуть|посмотреть)\b",
@@ -311,6 +316,7 @@ class DecisionEngine:
             r"\b(?:видео|ролик|клип|песн\w*|трек|фильм)\b",
             text
         ))
+
 
         if has_yt_keyword or has_play_intent or (has_media_noun and not any(w in text for w in ["пауза", "стоп", "громк"])):
             is_latest = bool(re.search(r"\b(?:последн\w*|свеж\w*|нов\w*|крайн\w*)\b", text))
@@ -409,7 +415,68 @@ class DecisionEngine:
             "parameters": {}
         }
 
+    def _normalize_site_name(self, name: str) -> str:
+        """Нормализует падежное окончание названия сайта (например: «кинопоиске» -> «кинопоиск», «википедии» -> «википедия»)."""
+        n = name.lower().strip()
+        if n.endswith("ии") and len(n) > 4:
+            return n[:-2] + "ия"
+        if n.endswith("е") and len(n) > 4:
+            return n[:-1]
+        return n
+
+
+    def _parse_site_search(self, cleaned_raw: str) -> Optional[dict[str, Any]]:
+        """
+        Распознает универсальный поиск по конкретному сайту или сервису.
+        Примеры:
+        - «На Кинопоиске найди фильм Начало»
+        - «Найди на Авито велосипед»
+        - «В Википедии найди квантовую физику»
+        - «На Озоне найди кофеварку»
+        """
+        excluded_sites = {
+            "гугле", "гугл", "google", "ютубе", "ютуб", "youtube",
+            "браузере", "интернете", "сети", "компе", "компьютере"
+        }
+
+        # Шаблон 1: «на/в <сайт> найди/включи <запрос>»
+        m1 = re.search(
+            r"^(?:на|в|во)\s+([a-zA-Zа-яА-Я0-9_.-]+)\s+(?:найди|поищи|покажи|включи|открой|вруби|поставь)\s+(.+)",
+            cleaned_raw,
+            flags=re.IGNORECASE
+        )
+        if m1:
+            site_raw = m1.group(1).lower()
+            if site_raw not in excluded_sites:
+                site_norm = self._normalize_site_name(site_raw)
+                query = m1.group(2).strip()
+                return {
+                    "action": "chrome_cdp",
+                    "target": "search",
+                    "parameters": {"site": site_norm, "query": query, "click_first": False}
+                }
+
+        # Шаблон 2: «найди/включи на/в <сайт> <запрос>»
+        m2 = re.search(
+            r"^(?:найди|поищи|покажи|включи|открой|вруби|поставь)\s+(?:на|в|во)\s+([a-zA-Zа-яА-Я0-9_.-]+)\s+(.+)",
+            cleaned_raw,
+            flags=re.IGNORECASE
+        )
+        if m2:
+            site_raw = m2.group(1).lower()
+            if site_raw not in excluded_sites:
+                site_norm = self._normalize_site_name(site_raw)
+                query = m2.group(2).strip()
+                return {
+                    "action": "chrome_cdp",
+                    "target": "search",
+                    "parameters": {"site": site_norm, "query": query, "click_first": False}
+                }
+
+        return None
+
     def _parse_with_llm(self, query: str) -> dict[str, Any]:
+
         """Инференс локальной нейросети Qwen2.5 GGUF для семантического роутинга и ответов."""
         if not self._is_loaded or self._llm is None:
             ok = self.load_model()
