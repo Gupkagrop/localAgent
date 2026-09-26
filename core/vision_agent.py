@@ -166,7 +166,8 @@ def _worker_process_loop(
     task_queue: mp.Queue,
     status_queue: mp.Queue,
     model_name: str,
-    stop_event: Any
+    stop_event: Any,
+    fallback_model: str = "Qwen/Qwen2.5-VL-3B-Instruct"
 ) -> None:
     """
     Основной цикл изолированного рабочего процесса Vision-агента.
@@ -179,8 +180,6 @@ def _worker_process_loop(
     screen = ScreenController()
     failsafe = FailSafeMonitor()
 
-    status_queue.put({"type": "log", "message": f"Загрузка модели {model_name} в 4-битном режиме (NF4)..."})
-
     # 4-битная квантизация BitsAndBytes NF4
     quant_config = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -189,18 +188,30 @@ def _worker_process_loop(
         bnb_4bit_use_double_quant=True
     )
 
-    try:
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            model_name,
-            quantization_config=quant_config,
-            device_map="auto",
-            torch_dtype=torch.float16,
-            low_cpu_mem_usage=True
-        )
-        processor = AutoProcessor.from_pretrained(model_name)
-        status_queue.put({"type": "ready", "message": "Vision-модель готова к работе"})
-    except Exception as e:
-        status_queue.put({"type": "error", "message": f"Ошибка инициализации модели: {e}"})
+    model = None
+    processor = None
+    candidates = [model_name]
+    if fallback_model and fallback_model != model_name:
+        candidates.append(fallback_model)
+
+    for candidate in candidates:
+        status_queue.put({"type": "log", "message": f"Загрузка модели {candidate} в 4-битном режиме (NF4)..."})
+        try:
+            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                candidate,
+                quantization_config=quant_config,
+                device_map="auto",
+                torch_dtype=torch.float16,
+                low_cpu_mem_usage=True
+            )
+            processor = AutoProcessor.from_pretrained(candidate)
+            status_queue.put({"type": "ready", "message": f"Vision-модель {candidate} готова к работе"})
+            break
+        except Exception as e:
+            status_queue.put({"type": "log", "message": f"Не удалось загрузить {candidate}: {e}"})
+
+    if model is None or processor is None:
+        status_queue.put({"type": "error", "message": "Ошибка: не удалось загрузить ни основную, ни резервную модель"})
         return
 
     while not stop_event.is_set():
@@ -269,10 +280,9 @@ def _worker_process_loop(
 
             try:
                 text_input = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-                image_inputs, video_inputs = processor.image_processor(images=[image], return_tensors="pt")
                 inputs = processor(
                     text=[text_input],
-                    images=image_inputs,
+                    images=[image],
                     padding=True,
                     return_tensors="pt"
                 ).to("cuda")
@@ -410,7 +420,7 @@ class VisionAgentProcessManager:
 
         self._process = mp.Process(
             target=_worker_process_loop,
-            args=(self._task_queue, self._status_queue, self.model_name, self._stop_event),
+            args=(self._task_queue, self._status_queue, self.model_name, self._stop_event, self.fallback_model),
             daemon=True
         )
         self._process.start()
