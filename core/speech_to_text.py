@@ -32,8 +32,9 @@ class SpeechToText:
         self._model: Optional[WhisperModel] = None
         self._lock = threading.Lock()
         self._initial_prompt: str = (
-            "antigravity, agy, terminal, git, powershell, chrome, python, "
-            "visual studio code, джарвис, открой, запусти, громкость"
+            "Джарвис, открой, запусти, сделай, Antigravity, agy, терминал, git, commit, push, "
+            "powershell, chrome, браузер, ютуб, калькулятор, блокнот, telegram, "
+            "visual studio code, громкость, тише, громче, пауза, трек, поиск."
         )
 
     def load_model(self) -> bool:
@@ -72,13 +73,28 @@ class SpeechToText:
             if audio_data.dtype != np.float32:
                 audio_data = audio_data.astype(np.float32)
 
+            # Нормализация амплитуды и удаление постоянной составляющей (DC offset)
+            audio_data = audio_data - np.mean(audio_data)
+            peak = float(np.max(np.abs(audio_data))) if len(audio_data) > 0 else 0.0
+            if peak > 0.003:
+                # Масштабируем тихий сигнал микрофона ноутбука до целевого уровня 0.85
+                scale = min(15.0, 0.85 / peak)
+                audio_data = audio_data * scale
+
             try:
                 segments, info = self._model.transcribe(
                     audio_data,
-                    beam_size=1,
+                    beam_size=5,
+                    best_of=5,
+                    temperature=0.0,
                     language="ru",
                     initial_prompt=self._initial_prompt,
-                    vad_filter=False
+                    vad_filter=True,
+                    vad_parameters=dict(
+                        min_silence_duration_ms=250,
+                        speech_pad_ms=200
+                    ),
+                    condition_on_previous_text=False
                 )
                 text = " ".join([seg.text.strip() for seg in segments]).strip()
                 return text
@@ -96,6 +112,7 @@ class SpeechToText:
                 self.model_size,
                 device=self.device,
                 compute_type=compute_type,
+                cpu_threads=4,
                 download_root=os.path.expanduser("~/.cache/huggingface/hub")
             )
             return True
@@ -105,6 +122,7 @@ class SpeechToText:
                     self.model_size,
                     device="cpu",
                     compute_type="int8",
+                    cpu_threads=4,
                     download_root=os.path.expanduser("~/.cache/huggingface/hub")
                 )
                 self.device = "cpu"

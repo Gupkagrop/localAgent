@@ -309,20 +309,49 @@ class DecisionEngine:
             if not ok or self._llm is None:
                 return {"action": "unknown", "target": query, "parameters": {}}
 
+        schema = {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "launch_app",
+                        "open_url",
+                        "antigravity_gui",
+                        "antigravity_cli",
+                        "set_volume",
+                        "media_control",
+                        "system_action",
+                        "general_answer",
+                        "unknown"
+                    ]
+                },
+                "target": {"type": "string"},
+                "parameters": {"type": "object"}
+            },
+            "required": ["action", "target", "parameters"]
+        }
+
         system_prompt = (
             "Ты — интеллектуальный диспетчер команд голосового ассистента Windows. "
-            "Пользователь говорит по-русски. Твоя задача — вернуть строго JSON объект без лишнего текста и markdown. "
-            "Формат JSON: {\"action\": string, \"target\": string, \"parameters\": object}. "
-            "Поддерживаемые действия:\n"
-            "- \"antigravity_gui\": target in [\"open\", \"new_chat\", \"prompt\"], parameters: {\"prompt\": \"...\"}\n"
-            "- \"antigravity_cli\": target \"launch\", parameters: {\"prompt\": \"...\"}\n"
-            "- \"set_volume\": target in [\"step_up\", \"step_down\", \"mute\", \"absolute\"], parameters: {\"percent\": 0-100}\n"
-            "- \"media_control\": target in [\"play_pause\", \"next_track\", \"prev_track\"]\n"
-            "- \"open_url\": target URL (например https://www.google.com/search?q=...)\n"
-            "- \"launch_app\": target executable name (например calc.exe, notepad.exe, telegram.exe, code.exe)\n"
-            "- \"system_action\": target in [\"shutdown\", \"restart\"], parameters: {\"dangerous\": True}\n"
-            "- \"general_answer\": target \"answer\", parameters: {\"text\": \"Краткий и точный ответ на русском языке (1-2 предложения)\"}\n"
-            "Если запрос — это вопрос, справка или беседа, всегда возвращай action \"general_answer\"."
+            "Пользователь говорит по-русски. Твоя задача — вернуть строго JSON объект действия.\n"
+            "Примеры:\n"
+            "- 'открой калькулятор' -> {\"action\": \"launch_app\", \"target\": \"calc.exe\", \"parameters\": {\"app_name\": \"калькулятор\"}}\n"
+            "- 'открой блокнот' -> {\"action\": \"launch_app\", \"target\": \"notepad.exe\", \"parameters\": {\"app_name\": \"блокнот\"}}\n"
+            "- 'включи музыку' -> {\"action\": \"media_control\", \"target\": \"play_pause\", \"parameters\": {}}\n"
+            "- 'громкость 50' -> {\"action\": \"set_volume\", \"target\": \"absolute\", \"parameters\": {\"percent\": 50}}\n"
+            "- 'сделай тише' -> {\"action\": \"set_volume\", \"target\": \"step_down\", \"parameters\": {\"step\": 10}}\n"
+            "- 'найди в гугле питон' -> {\"action\": \"open_url\", \"target\": \"https://www.google.com/search?q=питон\", \"parameters\": {\"query\": \"питон\"}}\n"
+            "- 'открой ютуб' -> {\"action\": \"open_url\", \"target\": \"https://youtube.com\", \"parameters\": {}}\n"
+            "- 'открой антигравити' -> {\"action\": \"antigravity_gui\", \"target\": \"open\", \"parameters\": {}}\n"
+            "- 'создай новый чат в антигравити' -> {\"action\": \"antigravity_gui\", \"target\": \"new_chat\", \"parameters\": {}}\n"
+            "- 'напиши в антигравити напиши скрипт' -> {\"action\": \"antigravity_gui\", \"target\": \"prompt\", \"parameters\": {\"prompt\": \"напиши скрипт\", \"new_chat\": true}}\n"
+            "- 'запусти в agy тесты' -> {\"action\": \"antigravity_cli\", \"target\": \"launch\", \"parameters\": {\"prompt\": \"agy тесты\"}}\n"
+            "- 'сколько будет два плюс два' -> {\"action\": \"general_answer\", \"target\": \"answer\", \"parameters\": {\"text\": \"Четыре.\"}}\n"
+            "ПРАВИЛА:\n"
+            "1. Для любых команд управления (открыть, запустить, найти, громкость, звук, трек, антигравити) ВСЕГДА выбирай системное действие!\n"
+            "2. Никогда не используй 'general_answer' для команд запуска или управления!\n"
+            "3. Для вопросов отвечай 'general_answer' СТРОГО одним кратким предложением (до 10-12 слов), без вступительных слов и без монологов."
         )
 
         try:
@@ -331,22 +360,66 @@ class DecisionEngine:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": query}
                 ],
-                max_tokens=150,
-                temperature=0.1
+                response_format={"type": "json_object", "schema": schema},
+                max_tokens=64,
+                temperature=0.0
             )
             content = resp["choices"][0]["message"]["content"].strip()
-            match = re.search(r"\{.*\}", content, re.DOTALL)
-            if match:
-                data = json.loads(match.group(0))
-                if isinstance(data, dict) and "action" in data:
-                    return data
+            data = json.loads(content)
+            action = data.get("action", "unknown")
 
-            return {
-                "action": "general_answer",
-                "target": "answer",
-                "parameters": {"text": content}
-            }
+            # Защита от длинных ответов при general_answer
+            if action == "general_answer":
+                params = data.get("parameters", {})
+                raw_text = params.get("text", "") or data.get("target", "")
+
+                # Если запрос содержал глаголы действия, перенаправляем в поиск вместо чтения лекции
+                cmd_verbs = ["открой", "запусти", "включи", "найди", "поищи", "поставь"]
+                if any(v in query.lower() for v in cmd_verbs):
+                    return {
+                        "action": "open_url",
+                        "target": f"https://www.google.com/search?q={query}",
+                        "parameters": {"query": query}
+                    }
+
+                # Оставляем ровно 1 первое предложение (до 100 символов)
+                sentences = re.split(r"(?<=[.!?])\s+", str(raw_text).strip())
+                short_text = sentences[0] if sentences else str(raw_text).strip()
+                if len(short_text) > 100:
+                    short_text = short_text[:97] + "..."
+                params["text"] = short_text
+                data["parameters"] = params
+
+            return data
         except Exception:
+            try:
+                # Запасной вариант если response_format со схемой не поддерживается
+                resp = self._llm.create_chat_completion(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": query}
+                    ],
+                    max_tokens=64,
+                    temperature=0.0
+                )
+                content = resp["choices"][0]["message"]["content"].strip()
+                match = re.search(r"\{.*\}", content, re.DOTALL)
+                if match:
+                    data = json.loads(match.group(0))
+                    if isinstance(data, dict) and "action" in data:
+                        return data
+            except Exception:
+                pass
+
+            # Если была команда, перенаправляем в веб-поиск
+            cmd_verbs = ["открой", "запусти", "включи", "найди", "поищи"]
+            if any(v in query.lower() for v in cmd_verbs):
+                return {
+                    "action": "open_url",
+                    "target": f"https://www.google.com/search?q={query}",
+                    "parameters": {"query": query}
+                }
+
             return {
                 "action": "unknown",
                 "target": query,

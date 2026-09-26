@@ -315,6 +315,33 @@ class MainWindow(QMainWindow):
         mic_layout.addWidget(self.cb_microphones)
         sett_layout.addWidget(mic_box)
 
+        # 2.1 Выбор модели распознавания речи (Faster-Whisper)
+        stt_box = QGroupBox("Модель распознавания речи (Faster-Whisper)", tab_settings_content)
+        stt_layout = QVBoxLayout(stt_box)
+        stt_layout.setSpacing(6)
+
+        lbl_stt = QLabel("Модель Whisper для преобразования голоса в текст:", stt_box)
+        lbl_stt.setStyleSheet("color: #9CA3AF; font-size: 11px;")
+        stt_layout.addWidget(lbl_stt)
+
+        self.cb_stt_model = QComboBox(stt_box)
+        self.cb_stt_model.addItem("🚀 Turbo (Large-v3-Turbo: флагманская точность, ~800M) — Рекомендуется", "turbo")
+        self.cb_stt_model.addItem("⚡ Medium (Высокая точность русской речи, ~769M)", "medium")
+        self.cb_stt_model.addItem("Базовая Small (Экономичная, ~244M)", "small")
+
+        cur_stt = self.settings.get("stt_model", "turbo")
+        idx = self.cb_stt_model.findData(cur_stt)
+        if idx >= 0:
+            self.cb_stt_model.setCurrentIndex(idx)
+        self.cb_stt_model.currentIndexChanged.connect(self._on_stt_model_selected)
+        stt_layout.addWidget(self.cb_stt_model)
+
+        lbl_stt_tip = QLabel("Turbo обеспечивает максимальную точность распознавания русских фраз и технических терминов.", stt_box)
+        lbl_stt_tip.setStyleSheet("color: #6B7280; font-size: 11px;")
+        stt_layout.addWidget(lbl_stt_tip)
+
+        sett_layout.addWidget(stt_box)
+
         # 3. Интеграция с Windows и автозапуск
         sys_box = QGroupBox("Автозапуск и системные параметры", tab_settings_content)
         sys_layout = QVBoxLayout(sys_box)
@@ -575,6 +602,14 @@ class MainWindow(QMainWindow):
         self.save_settings()
         self.rb_wake_word.setText("Кнопка Copilot + фоновый вызов словом «Джарвис» (Hands-free)")
         self.log("Слово-триггер сброшено на значение по умолчанию: «Джарвис».")
+
+    def _on_stt_model_selected(self, index: int):
+        model_val = self.cb_stt_model.itemData(index)
+        if model_val:
+            self.settings["stt_model"] = model_val
+            self.save_settings()
+            self.settings_changed.emit(self.settings)
+            self.log(f"Настройки: выбрана модель распознавания «{model_val}».")
 
     def _on_autostart_toggled(self, checked: bool):
         self.settings["autostart_with_windows"] = checked

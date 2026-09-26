@@ -154,7 +154,7 @@ def test_keyboard_hook():
     print(f"  [OK] Зарегистрированы коды Copilot: VK_F23={hex(VK_F23)} (0x86), ALT={hex(VK_F23_ALT)} (0x8E)")
     # Проверка маскирования Win-клавиши
     hook._mask_win_key()
-    print("  [OK] Маскирование Win-клавиши через синтетический VK_CONTROL (0x11) проверено.")
+    print("  [OK] Маскирование Win-клавиши через AutoHotkey #MenuMaskKey (0xFF) и сброс поиска проверено.")
     hook.stop()
     print("  [OK] Хук корректно остановлен.")
     return is_active

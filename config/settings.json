@@ -2,8 +2,8 @@
   "autostart_with_windows": false,
   "start_minimized": false,
   "close_behavior": "ask",
-  "default_activation_mode": "wake_word_and_copilot",
-  "wake_word_enabled": true,
+  "default_activation_mode": "copilot_only",
+  "wake_word_enabled": false,
   "wake_word": "джарвис",
   "audio_ducking_enabled": true,
   "audio_ducking_level": 0.2,
@@ -11,6 +11,7 @@
   "tts_enabled": true,
   "tts_voice": "ru_RU-irina-medium",
   "tts_speed": 1.0,
-  "audio_device_index": 1,
+  "audio_device_index": 0,
+  "stt_model": "small",
   "confirm_dangerous_actions": true
 }

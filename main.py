@@ -222,6 +222,13 @@ class AppCoordinator(QObject):
         sapi_speed = int(max(-10, min(10, (tts_speed - 1.0) * 10)))
         self.tts.voice_name = tts_voice
         self.tts.speed = sapi_speed
+
+        stt_model = settings.get("stt_model", "small")
+        if self.stt.model_size != stt_model:
+            self.stt.unload_model()
+            self.stt.model_size = stt_model
+            self.log(f"Модель Faster-Whisper изменена на «{stt_model}».")
+
         self._apply_activation_mode()
 
     def _on_any_key_from_hook(self, vk: int, hex_code: str):
@@ -230,6 +237,7 @@ class AppCoordinator(QObject):
 
     def _on_copilot_click_from_hook(self):
         """Событие одиночного клика клавиши Copilot из низкоуровневого потока."""
+        self.hook.dismiss_search_window()
         if self.is_agent_running:
             self.request_voice_input_signal.emit()
         else:
@@ -237,6 +245,7 @@ class AppCoordinator(QObject):
 
     def _on_copilot_hold_from_hook(self):
         """Событие удержания клавиши Copilot из низкоуровневого потока."""
+        self.hook.dismiss_search_window()
         self.request_spotlight_signal.emit()
 
     def _show_start_agent_prompt(self):

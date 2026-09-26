@@ -45,17 +45,32 @@ class CopilotKeyHook:
         self._press_start_time: Optional[float] = None
         self._hold_triggered = False
         self._timer: Optional[threading.Timer] = None
+        self._copilot_active = False
 
     def _mask_win_key(self):
         """
         Нейтрализует открытие меню Пуск и поиска Windows.
-        Посылает кратковременное нажатие и отпускание VK_CONTROL (0x11).
-        Windows помечает, что клавиша Win использовалась как системный модификатор,
-        и не открывает Windows Search / меню Пуск.
+        Использует vkFF (0xFF, стандарт AutoHotkey #MenuMaskKey),
+        чтобы Windows пометила использование модификатора без открытия меню или поиска.
         """
         try:
-            ctypes.windll.user32.keybd_event(VK_CONTROL, 0, 0, 0)
-            ctypes.windll.user32.keybd_event(VK_CONTROL, 0, 2, 0)
+            # 1. Посылаем dummy mask key vkFF
+            ctypes.windll.user32.keybd_event(0xFF, 0, 0, 0)
+            ctypes.windll.user32.keybd_event(0xFF, 0, KEYEVENTF_KEYUP, 0)
+            # 2. Принудительно сбрасываем состояние Win и Shift
+            ctypes.windll.user32.keybd_event(VK_LWIN, 0, KEYEVENTF_KEYUP, 0)
+            ctypes.windll.user32.keybd_event(VK_LSHIFT, 0, KEYEVENTF_KEYUP, 0)
+            # 3. Закрываем всплывающее окно поиска Windows при случайном вызове
+            self.dismiss_search_window()
+        except Exception:
+            pass
+
+    def dismiss_search_window(self):
+        """Закрывает окно поиска Windows SearchHost при попытке всплытия."""
+        try:
+            # Отправка ESCAPE мгновенно закрывает Windows Search flyout
+            ctypes.windll.user32.keybd_event(0x1B, 0, 0, 0)
+            ctypes.windll.user32.keybd_event(0x1B, 0, KEYEVENTF_KEYUP, 0)
         except Exception:
             pass
 
@@ -72,8 +87,21 @@ class CopilotKeyHook:
             if msg in (WM_KEYDOWN, WM_SYSKEYDOWN) and self.on_any_key:
                 self.on_any_key(vk, hex(vk))
 
+            # Подавление системного отпускания Win и Shift после последовательности Copilot
+            if self._copilot_active:
+                if vk in (VK_LWIN, VK_RWIN, VK_LSHIFT, 0x10):
+                    if msg in (WM_KEYUP, WM_SYSKEYUP):
+                        win_down = (ctypes.windll.user32.GetKeyState(VK_LWIN) & 0x8000) or (ctypes.windll.user32.GetKeyState(VK_RWIN) & 0x8000)
+                        shift_down = (ctypes.windll.user32.GetKeyState(VK_LSHIFT) & 0x8000) or (ctypes.windll.user32.GetKeyState(0x10) & 0x8000)
+                        if not win_down and not shift_down:
+                            self._copilot_active = False
+                        self._mask_win_key()
+                        return False
+                    return False
+
             # 1. Аппаратный код клавиши Copilot (VK_F23 = 0x86 или 0x8E)
             if vk in (VK_F23, VK_F23_ALT):
+                self._copilot_active = True
                 self._mask_win_key()
 
                 if msg in (WM_KEYDOWN, WM_SYSKEYDOWN):
