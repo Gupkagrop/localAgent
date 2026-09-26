@@ -124,6 +124,13 @@ class TestProcessManager(unittest.TestCase):
         mgr = VisionAgentProcessManager()
         self.assertFalse(mgr.is_running())
         self.assertFalse(mgr.is_ready())
+        self.assertEqual(mgr.model_name, "xlangai/Jedi-3B-1080p")
+        self.assertEqual(mgr.fallback_model, "Qwen/Qwen2.5-VL-3B-Instruct")
+
+    def test_manager_fallback_customization(self) -> None:
+        """Проверка настройки резервной модели."""
+        mgr = VisionAgentProcessManager(fallback_model="custom/fallback")
+        self.assertEqual(mgr.fallback_model, "custom/fallback")
 
 
 if __name__ == "__main__":

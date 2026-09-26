@@ -227,7 +227,7 @@ def _worker_process_loop(
             continue
 
         prompt = task.get("prompt", "")
-        max_steps = task.get("max_steps", 6)
+        max_steps = task.get("max_steps", 8)
         history: List[str] = []
 
         status_queue.put({"type": "task_started", "prompt": prompt})
@@ -474,7 +474,7 @@ class VisionAgentProcessManager:
                 break
         return events
 
-    def execute_task(self, prompt: str, max_steps: int = 6) -> bool:
+    def execute_task(self, prompt: str, max_steps: int = 8) -> bool:
         """Отправляет задачу на исполнение рабочему процессу."""
         if not self.is_running() or self._task_queue is None:
             return False

@@ -13,5 +13,8 @@
   "tts_speed": 1.0,
   "audio_device_index": 1,
   "stt_model": "turbo",
-  "confirm_dangerous_actions": true
+  "confirm_dangerous_actions": true,
+  "vision_max_steps": 8,
+  "vision_model": "xlangai/Jedi-3B-1080p",
+  "vision_auto_focus_browser": true
 }

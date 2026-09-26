@@ -228,12 +228,24 @@ class CommandExecutor:
             self.log(f"Предупреждение: Vision-агент не подключен, задача: «{prompt}»")
             return False, "Vision-агент не подключен"
 
+        # Автоматическая фокусировка браузера для веб-задач
+        prompt_lower = prompt.lower()
+        web_keywords = ["ютуб", "youtube", "авито", "avito", "озон", "ozon", "яндекс", "гугл", "google", "вк", "vk", "браузер", "chrome", "сайт", "видео"]
+        if any(w in prompt_lower for w in web_keywords):
+            try:
+                self.log("Активация окна браузера перед запуском анализа экрана...")
+                self.app_controller.launch_or_focus("хром", "chrome.exe")
+                time.sleep(0.35)
+            except Exception as e:
+                self.log(f"Предупреждение при фокусировке браузера: {e}")
+
         if not self.vision_manager.is_running():
             self.log("Инициализация и запуск фонового процесса Vision-агента...")
             self.vision_manager.start()
 
-        self.log(f"Задача передана автономному Vision-агенту: «{prompt}»")
-        ok = self.vision_manager.execute_task(prompt)
+        max_steps = int(params.get("max_steps", 8))
+        self.log(f"Задача передана автономному Vision-агенту (до {max_steps} шагов): «{prompt}»")
+        ok = self.vision_manager.execute_task(prompt, max_steps=max_steps)
         if ok:
             return True, "Анализирую экран..."
         return False, "Не удалось запустить выполнение задачи Vision-агентом"

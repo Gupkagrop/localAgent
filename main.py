@@ -572,24 +572,25 @@ class AppCoordinator(QObject):
 
     def _poll_vision_agent(self) -> None:
         """Опрашивает очередь событий фонового процесса Vision-агента и передает их в GUI."""
+        max_steps = int(self.window.settings.get("vision_max_steps", 8))
         events = self.vision_manager.poll_status()
         for ev in events:
             ev_type = ev.get("type")
             if ev_type == "ready":
                 self.log("✓ Vision Computer-Use Agent (Jedi-3B) готов к работе в фоновом процессе.")
             elif ev_type == "task_started":
-                self.pill.show_step(1, 6, "Анализирую экран...")
+                self.pill.show_step(1, max_steps, "Анализирую экран...")
                 self.log(f"Vision-агент начал выполнение: «{ev.get('prompt', '')}»")
             elif ev_type == "step_status":
                 step = ev.get("step", 1)
                 status = ev.get("status", "")
-                self.pill.show_step(step, 6, status)
+                self.pill.show_step(step, max_steps, status)
             elif ev_type == "action_decided":
                 step = ev.get("step", 1)
                 thought = ev.get("thought", "")
                 action_name = ev.get("action", "")
                 msg = thought or f"Действие: {action_name}"
-                self.pill.show_step(step, 6, msg)
+                self.pill.show_step(step, max_steps, msg)
                 self.log(f"  [Шаг {step}] {msg}")
             elif ev_type == "click_performed":
                 x = ev.get("x", 0)

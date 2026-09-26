@@ -233,7 +233,7 @@ class TestCoreModules(unittest.TestCase):
         ok, msg = executor.execute(cmd)
         self.assertTrue(ok)
         self.assertEqual(msg, "Анализирую экран...")
-        mock_vm.execute_task.assert_called_once_with("На ютубе найди Мармука")
+        mock_vm.execute_task.assert_called_once_with("На ютубе найди Мармука", max_steps=8)
 
     def test_audio_ducker_init(self):
         ducker = AudioDucker()
