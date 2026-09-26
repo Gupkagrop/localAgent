@@ -1,99 +1,128 @@
 > [!NOTE]
-> Данный файл содержит архитектурное описание, инструкции по запуску, стек технологий и стандарты разработки локального голосового ассистента **Antigravity Voice**. Предназначен для разработчиков и ИИ-агентов, работающих с проектом.
+> Данный файл содержит полное техническое описание архитектуры, аппаратного профиля, стандартов разработки и регламентов валидации локального мультимодального ассистента **Antigravity Voice & Vision Assistant (Jarvis)**. Предназначен для ИИ-агентов и инженеров, развивающих кодовую базу проекта.
 
-# Antigravity Voice Assistant
+# Antigravity Voice & Vision Assistant (Jarvis) — System Architecture & Standards
 
-Автономный локальный голосовой ассистент для Windows 11 с нативной поддержкой аппаратной клавиши **Copilot**, минимальным расходом видеопамяти и глубокой интеграцией с IDE **Antigravity 2.0** и **Antigravity CLI** (`agy`).
-
-Разработан и оптимизирован для ноутбуков с дискретной видеокартой **NVIDIA GeForce RTX 5050 Laptop GPU (8 ГБ GDDR7)**.
+Автономный локальный голосовой ассистент и агент компьютерного управления (**Computer-Use Agent**) для Windows 11 с нативной поддержкой аппаратной клавиши **Copilot** (`Shift + Win + F23`), распознаванием речи **Whisper Turbo** и аппаратным ускорением на видеокарте **NVIDIA GeForce RTX 5050 Laptop GPU (8 ГБ GDDR7)**.
 
 ---
 
-## 1. Стек технологий
+## 1. Аппаратный профиль и бюджет ресурсов (RTX 5050)
 
-* **Язык и среда:** Python 3.12 (изолированное виртуальное окружение `.venv` под управлением `uv`).
-* **Графический интерфейс:** `PyQt6` с темной темой Windows 11 Fluent 2 Dark и прокручиваемыми областями `QScrollArea`.
-* **Распознавание речи (STT):** `faster-whisper` (модель Small, ~460 МБ) с аппаратным ускорением **CUDA float16** на базе движка `ctranslate2 4.8.2`. Включает бандл библиотек `nvidia-cublas-cu12` и `nvidia-cudnn-cu12` (`cublas64_12.dll`, `cudnn64_9.dll`).
-* **Модуль принятия решений (Decision Engine):**
-  - **Fast-Path:** моментальный семантический роутер команд (0 мс задержки, 0 МБ VRAM).
-  - **Локальная LLM:** поддержка `Qwen2.5-1.5B-Instruct-Q4_K_M.gguf` (~1.1 ГБ) с встроенным загрузчиком прямо из GUI.
-* **Аудиоконтур:** `sounddevice` с архитектурой *Single Persistent Stream* (единый непрерывный поток, постоянный живой VU-метр, отсутствие ошибок WASAPI `PaErrorCode -9999`).
-* **Audio Ducking:** `pycaw` (Windows Core Audio API) — автоматическое приглушение системного звука до 20% во время записи голоса.
-* **Синтез речи (TTS):** Windows SAPI5 (русские системные голоса, 0 МБ VRAM).
-* **Аппаратный перехватчик:** `pynput` с низкоуровневым системным фильтром `win32_event_filter` (перехват официального кода Windows SDK `VK_F23 = 0x86` и `0x8E`, `VK_APPS = 0x5D`, `Win + Shift + C`, резервного `Ctrl + Shift + J` и маскирование `VK_CONTROL` для блокировки поиска Windows).
+* **Графический процессор:** NVIDIA GeForce RTX 5050 Laptop GPU (7.93 ГБ доступной VRAM).
+* **Оперативная память:** 16 ГБ RAM.
+* **Бюджет VRAM в активном режиме ассистента:**
+  * **Faster-Whisper Turbo:** ~1.4–1.6 ГБ VRAM (CUDA float16 через `ctranslate2 4.8.2`).
+  * **Vision-Language Model (Jedi-3B-1080p / Qwen2.5-VL-3B в 4-бит NF4):** ~2.0 ГБ веса + ~1.0–1.2 ГБ KV-кэш и визуальные токены = **~3.0–3.2 ГБ VRAM**.
+  * **Windows DWM / Оконный менеджер:** ~1.2–1.5 ГБ VRAM.
+  * **Суммарное потребление:** **~5.5–6.0 ГБ VRAM** (гарантированный резерв >2 ГБ VRAM для исключения OOM).
+* **Игровой режим:** Ассистент поддерживает полную выгрузку моделей из памяти до 0 МБ VRAM по команде или перед запуском тяжелых 3D-приложений.
 
 ---
 
-## 2. Структура проекта
+## 2. Стек технологий
+
+* **Среда выполнения:** Python 3.12 (изолированный `.venv` под управлением `uv`).
+* **Глубокое обучение и инференс:**
+  * `torch 2.11.0+cu128` и `torchvision 0.26.0+cu128` (CUDA 12.8).
+  * `transformers >= 5.17.0`, `accelerate`, `bitsandbytes 0.50.2` (квантование 4-bit NF4).
+  * `ctranslate2 4.8.2` (высокопроизводительный C++ бекенд для Whisper).
+* **Модели искусственного интеллекта:**
+  * **STT (Распознавание речи):** `faster-whisper` (модель `turbo`) с VAD-фильтрацией и подавлением галлюцинаций тишины.
+  * **Wake Word:** `openwakeword` (активация по фразе «Джарвис»).
+  * **Vision Computer-Use:** `xlangai/Jedi-3B-1080p` (специализированный дериватив `Qwen2.5-VL-3B`, натренированный на 4 миллионах интерфейсных действий с сохранением 100% кириллического OCR).
+* **Слой взаимодействия с Windows:**
+  * **Захват экрана:** Прямой Win32 GDI `BitBlt` (`core/screen_tools.py`) с привязкой к сессии `WinSta0\Default` (время кадра 1536x960 составляет 4 мс, DPI-Awareness per-monitor v2).
+  * **Эмуляция ввода:** Win32 API `SendInput` с флагом `KEYEVENTF_UNICODE` (полная поддержка русской и английской раскладки без порчи буфера обмена) и `mouse_event`.
+  * **Управление окнами:** `core/app_controller.py` (контроль процессов, предотвращение дублирования окон, фокус, сворачивание всех окон `Win+D`).
+  * **Audio Ducking:** `pycaw` (Windows Core Audio API) — плавное приглушение звука системы во время речи.
+  * **Перехватчик клавиатуры:** `pynput` с низкоуровневым системным фильтром `win32_event_filter` (коды `VK_F23 = 0x86`, маскирование Windows Search через `VK_CONTROL`).
+* **Пользовательский интерфейс:** `PyQt6` (Windows 11 Fluent Dark тема, плавающий статус-оверлей, всплывающий Spotlight, системный трей).
+
+---
+
+## 3. Архитектурные принципы и маршрутизация (Sense-Plan-Act)
+
+```mermaid
+flowchart TD
+    Voice["Голос пользователя"] --> Whisper["Faster-Whisper Turbo"]
+    Whisper --> Text["Текст команды"]
+    Text --> Router{"DecisionEngine Router"}
+
+    subgraph FastTrack ["Fast Path (~5 мс)"]
+        Router -- "Системная команда (громкость, окна, выключение)" --> Win32Exec["AppController / SystemExecutor"]
+    end
+
+    subgraph VisionTrack ["Vision Agent Loop (~0.5-0.8 сек/шаг)"]
+        Router -- "Интерфейсные задачи (YouTube, Telegram, Antigravity, Web)" --> Snap["ScreenCapture (GDI BitBlt 4 мс)"]
+        Snap --> VLM["Jedi-3B-1080p / Qwen2.5-VL-3B (4-bit NF4)"]
+        VLM --> Act["Действие: Click(x,y) / Type / Hotkey / Scroll"]
+        Act --> Win32Input["Win32 SendInput (DPI Aware)"]
+        Win32Input --> Verify["Контрольный скриншот"]
+        Verify --> GoalCheck{"Задача решена?"}
+        GoalCheck -- "Нет" --> VLM
+        GoalCheck -- "Да" --> Done["Готово (Голосовой отклик TTS)"]
+    end
+```
+
+### Правила маршрутизации:
+1. **Никаких тяжелых нейросетей на простые действия:** Команды вроде *«сделай громче»*, *«сверни всё»*, *«выключи звук»* отрабатывают за 5 мс через системный Win32 API.
+2. **Никаких хрупких захардкоженных селекторов сайтов:** Ассистент не использует CDP или парсинг DOM конкретных ресурсов. Он видит интерфейс экрана и кликает как живой оператор.
+3. **Безопасность действий:** Автономные клики, набор текста и навигация разрешены. Отправка сообщений в чатах и закрытие несохраненных окон запрашивают подтверждение пользователя.
+
+---
+
+## 4. Структура кодовой базы
 
 ```text
 localAgent/
 ├── config/
-│   ├── settings.json           # Конфигурация приложения (режим старта, трей, звук)
-│   └── commands.json           # Сопоставление команд, приложений и URL
+│   ├── settings.json           # Пользовательские настройки (триггер, TTS, STT)
+│   └── commands.json           # Системные сопоставления программ и алиасов
 ├── core/
-│   ├── audio_listener.py       # Единый аудиопоток, VAD, VU-метр, Wake Word «Джарвис»
-│   ├── audio_ducking.py        # Управление мастер-громкостью Windows (Audio Ducking)
-│   ├── speech_to_text.py       # Faster-Whisper Small (CUDA float16) с lock и 0 МБ VRAM
-│   ├── decision_engine.py      # Роутер команд Fast-Path + GGUF API загрузки
-│   ├── text_to_speech.py       # Windows SAPI5 синтезатор
-│   ├── keyboard_hook.py        # Перехватчик Copilot (pynput + VK_CONTROL маскирование)
-│   └── executor.py             # Исполнитель: Antigravity CLI/GUI, громкость, софт
+│   ├── audio_listener.py       # Непрерывный захват микрофона, VAD, VU-метр, Wake Word
+│   ├── audio_ducking.py        # Приглушение звука Windows (PyCAW)
+│   ├── speech_to_text.py       # Faster-Whisper Turbo (CUDA 12.8)
+│   ├── screen_tools.py         # Win32 GDI BitBlt захват экрана (4 мс), DPI scaling, мышь/клавиатура
+│   ├── vision_agent.py         # Мультимодальный агент Computer-Use (Jedi-3B / Qwen2.5-VL)
+│   ├── decision_engine.py      # Двухуровневый маршрутизатор (Fast Path vs Vision Path)
+│   ├── app_controller.py       # Управление окнами Windows (WinSta0/Default, запуск, фокус)
+│   ├── keyboard_hook.py        # Низкоуровневый перехватчик клавиши Copilot (F23)
+│   ├── text_to_speech.py       # Синтезатор голосового отклика
+│   └── executor.py             # Системный исполнитель Win32
 ├── gui/
-│   ├── main_window.py          # Панель управления с 6 карточками статуса и QScrollArea
-│   ├── floating_pill.py        # Полупрозрачный оверлей-пилюля со статусом распознавания
-│   ├── spotlight_bar.py        # Плавающая поисковая строка Spotlight (центр экрана)
-│   ├── close_dialog.py         # Диалог подтверждения закрытия («Запомнить выбор»)
-│   ├── tray_manager.py         # Иконка системного трея Windows и контекстное меню
-│   └── styles.py               # Fluent 2 Dark тема с адаптивной прокруткой
-├── models/                     # Каталог весов локальной LLM (Qwen2.5 GGUF)
-├── sounds/                     # WAV-сигналы: activate, success, error
+│   ├── main_window.py          # Панель управления и логи
+│   ├── floating_pill.py        # Плавающий статус-оверлей распознавания и кликов
+│   ├── spotlight_bar.py        # Строка ввода команд Spotlight
+│   ├── close_dialog.py         # Диалог выхода / сворачивания в трей
+│   ├── tray_manager.py         # Иконка системного трея
+│   └── styles.py               # Fluent 2 Dark QSS
+├── sounds/                     # Аудиосигналы (activate, success, error)
 ├── tests/
-│   ├── check_env.py            # Диагностика установленных пакетов и CUDA
+│   ├── test_components.py      # Модульные тесты системных модулей (56 тестов)
+│   ├── test_screen_tools.py    # Тесты захвата экрана и координатной сетки (6 тестов)
 │   ├── test_cuda_stt.py        # Тест Faster-Whisper на GPU
-│   ├── test_components.py      # 18 модульных тестов компонентов
-│   ├── smoke_test.py           # Тест инициализации координатора и GUI
-│   └── full_verification.py    # Сквозной валидационный тест всех 8 систем
-├── create_shortcut.py          # Скрипт создания ярлыка Antigravity Voice.lnk
-├── main.py                     # Точка входа координатора приложения
-├── DETAILED_PLAN.md            # Чек-лист реализации и статус компонентов
-└── GEMINI.md                   # Архитектурное руководство и инструкции
+│   └── full_verification.py    # Комплексная диагностика всех подсистем (100% OK)
+├── create_shortcut.py          # Создание тихого ярлыка на Desktop
+├── main.py                     # Главный координатор приложения
+├── pyproject.toml              # Окружение uv
+├── README.md                   # Руководство пользователя
+└── GEMINI.md                   # Архитектурное руководство (этот файл)
 ```
 
 ---
 
-## 3. Инструкции по запуску и управлению
+## 5. Регламент валидации и запуска тестов
 
-### Обычный запуск (для пользователя):
-* Двойной клик по ярлыку на рабочем столе: `Antigravity Voice.lnk`.
-* Или через командную строку:
-  ```powershell
-  Set-Location "C:\Users\denis\Documents\antigravity\localAgent"
-  .\.venv\Scripts\python.exe main.py
-  ```
+Каждое изменение в кодовой базе обязательно проверяется автоматизированным тест-сьютом:
 
-### Тихий запуск (в трей):
 ```powershell
-.\.venv\Scripts\pythonw.exe main.py --minimized
+# 1. Запуск модульных тестов компонентов (56 тестов)
+.\.venv\Scripts\python.exe -m unittest tests/test_components.py
+
+# 2. Запуск тестов подсистемы экрана и ввода (6 тестов)
+.\.venv\Scripts\python.exe -m unittest tests/test_screen_tools.py
+
+# 3. Полный валидационный аудит всех 8 подсистем
+.\.venv\Scripts\python.exe tests/full_verification.py
 ```
-
-### Запуск тестов:
-```powershell
-# Модульные тесты компонентов (20 тестов)
-$env:PYTHONPATH="."; .\.venv\Scripts\python.exe -m unittest tests/test_components.py
-
-# Сквозной тест всех 8 систем
-$env:PYTHONIOENCODING="utf-8"; .\.venv\Scripts\python.exe tests/full_verification.py
-```
-
----
-
-## 4. Поведение аппаратной клавиши Copilot
-
-1. **Короткий клик (< 0.4 сек):**
-   * Если ассистент активен: воспроизводится мягкий звук `activate.wav`, приглушается фоновый звук системы (Audio Ducking), всплывает полупрозрачная пилюля и включается запись команды (Tap-to-Talk).
-   * Если ассистент остановлен: всплывает диалог с предложением запустить систему.
-2. **Удержание (>= 0.4 сек):**
-   * По центру экрана всплывает командная строка **Spotlight** с историей команд (`Вверх`/`Вниз`) и подсказками быстрых действий.
-3. **Блокировка поиска Windows:**
-   * При каждом обнаружении `VK_F23` hook посылает кратковременный синтетический сигнал `VK_CONTROL` (`0x11`), что исключает открытие меню Пуск и Windows Search.
