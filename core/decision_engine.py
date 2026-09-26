@@ -249,9 +249,13 @@ class DecisionEngine:
                 "parameters": {}
             }
         # Динамические URL из commands.json
+        words = text.split()
         for site_key, site_url in self.url_map.items():
-            stem = site_key.rstrip("аеиоуыэюя") if len(site_key) > 3 else site_key
-            if site_key in text or (stem and stem in text):
+            matches = any(
+                w == site_key or (len(site_key) >= 4 and w.startswith(site_key[:-1]))
+                for w in words
+            )
+            if site_key in text or matches:
                 return {
                     "action": "open_url",
                     "target": site_url,
@@ -260,8 +264,11 @@ class DecisionEngine:
 
         # 6. Запуск программ (динамически из commands.json + встроенные)
         for name, cmd in self.app_map.items():
-            stem = name.rstrip("аеиоуыэюя") if len(name) > 3 else name
-            if name in text or (stem and stem in text):
+            matches = any(
+                w == name or (len(name) >= 4 and w.startswith(name[:-1]))
+                for w in words
+            )
+            if name in text or matches:
                 return {
                     "action": "launch_app",
                     "target": cmd,

@@ -37,6 +37,7 @@ class AppCoordinator(QObject):
     pill_text_signal = pyqtSignal(str)
     pill_executing_signal = pyqtSignal(str)
     pill_error_signal = pyqtSignal(str)
+    pill_listening_signal = pyqtSignal()
     key_detected_signal = pyqtSignal(str, int)
     llm_download_progress_signal = pyqtSignal(int)
     llm_download_done_signal = pyqtSignal(bool)
@@ -132,6 +133,7 @@ class AppCoordinator(QObject):
         self.pill_text_signal.connect(self.pill.update_text)
         self.pill_executing_signal.connect(self.pill.show_executing)
         self.pill_error_signal.connect(self.pill.show_error)
+        self.pill_listening_signal.connect(self.pill.show_listening)
 
         # Сигналы окон и трея
         self.window.agent_toggle_requested.connect(self.toggle_agent)
@@ -463,7 +465,7 @@ class AppCoordinator(QObject):
 
             # 5. Проверка управления звуком (Audio Ducking) и звуковых эффектов
             try:
-                has_endpoint = self.audio_ducker._get_endpoint_volume() is not None
+                has_endpoint = self.audio_ducker._get_volume_endpoint() is not None
                 sounds_ok = all(
                     os.path.exists(os.path.join(self.sounds_dir, f"{s}.wav"))
                     for s in ("activate", "success", "error")
@@ -563,7 +565,7 @@ class AppCoordinator(QObject):
             try:
                 # 1. Сигнал и пилюля
                 self._play_sound("activate")
-                self.pill.show_listening()
+                self.pill_listening_signal.emit()
 
                 # 2. Audio Ducking
                 if self.window.settings.get("audio_ducking_enabled", True):

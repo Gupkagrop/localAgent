@@ -52,10 +52,10 @@ class AudioDucker:
             if endpoint is not None:
                 try:
                     endpoint.SetMasterVolumeLevelScalar(self._previous_volume, None)
-                    self._is_ducked = False
-                    self._previous_volume = None
                 except Exception:
                     pass
+            self._is_ducked = False
+            self._previous_volume = None
 
     def set_volume(self, percent: float) -> bool:
         """Устанавливает абсолютный уровень громкости от 0.0 до 1.0."""

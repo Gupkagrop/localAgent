@@ -118,6 +118,11 @@ class TestCoreModules(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(msg, "CONFIRM_REQUIRED")
 
+    def test_executor_antigravity_config(self):
+        executor = CommandExecutor()
+        self.assertIn("Antigravity", executor.gui_window_names)
+        self.assertEqual(executor.cli_executable, "agy")
+
 class TestConfigs(unittest.TestCase):
     def test_settings_integrity(self):
         config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "settings.json")

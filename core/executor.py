@@ -4,6 +4,7 @@
 медиаплеером, а также интеграцию с Antigravity CLI и Antigravity 2.0 GUI.
 """
 import os
+import json
 import time
 import ctypes
 import subprocess
@@ -36,6 +37,20 @@ class CommandExecutor:
     ):
         self.audio_ducker = audio_ducker or AudioDucker()
         self.on_log = on_log
+        self.commands_config = self._load_commands_config()
+        antigravity_cfg = self.commands_config.get("antigravity", {})
+        self.gui_window_names: list[str] = antigravity_cfg.get("gui_window_names", ["Antigravity", "antigravity"])
+        self.cli_executable: str = antigravity_cfg.get("cli_executable", "agy")
+
+    def _load_commands_config(self) -> dict:
+        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "commands.json")
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
 
     def log(self, message: str) -> None:
         if self.on_log:
@@ -135,8 +150,8 @@ class CommandExecutor:
         def enum_windows_callback(handle, extra):
             nonlocal hwnd
             if win32gui.IsWindowVisible(handle):
-                title = win32gui.GetWindowText(handle)
-                if "antigravity" in title.lower():
+                title = win32gui.GetWindowText(handle).lower()
+                if any(w.lower() in title for w in self.gui_window_names):
                     hwnd = handle
             return True
 
@@ -191,14 +206,15 @@ class CommandExecutor:
 
     def _handle_antigravity_cli(self, prompt: str) -> tuple[bool, str]:
         """Запускает Antigravity CLI в Windows Terminal."""
+        cli_exe = self.cli_executable
         try:
             # Команда запуска Windows Terminal с вкладкой PowerShell и agy
             if prompt:
                 # Экранируем кавычки для powershell
                 escaped_prompt = prompt.replace('"', '`"')
-                cmd = f'wt.exe -w 0 nt powershell -NoExit -Command "agy -p \\"{escaped_prompt}\\""'
+                cmd = f'wt.exe -w 0 nt powershell -NoExit -Command "{cli_exe} -p \\"{escaped_prompt}\\""'
             else:
-                cmd = 'wt.exe -w 0 nt powershell -NoExit -Command "agy"'
+                cmd = f'wt.exe -w 0 nt powershell -NoExit -Command "{cli_exe}"'
 
             subprocess.Popen(cmd, shell=True)
             self.log(f"Запущен Antigravity CLI с задачей: {prompt or 'интерактивный режим'}")
@@ -207,9 +223,9 @@ class CommandExecutor:
             # Fallback если wt.exe недоступен
             try:
                 if prompt:
-                    cmd = f'start powershell -NoExit -Command "agy -p \\"{prompt}\\""'
+                    cmd = f'start powershell -NoExit -Command "{cli_exe} -p \\"{prompt}\\""'
                 else:
-                    cmd = 'start powershell -NoExit -Command "agy"'
+                    cmd = f'start powershell -NoExit -Command "{cli_exe}"'
                 subprocess.Popen(cmd, shell=True)
                 return True, "Antigravity CLI запущен в PowerShell"
             except Exception as e:

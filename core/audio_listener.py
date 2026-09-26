@@ -120,8 +120,8 @@ class AudioListener:
                 self.on_vu_meter(0.0)
 
     def _process_recording(self, chunk: np.ndarray, rms: float):
-        """Накапливает сэмплы при записи голосовой команды до наступления паузы."""
-        self._record_buffer.append(chunk)
+        with self._state_lock:
+            self._record_buffer.append(chunk)
 
         is_speech = rms > self.speech_energy_threshold
         now = time.time()
