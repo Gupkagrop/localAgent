@@ -147,7 +147,7 @@ class MainWindow(QMainWindow):
         grid_cards.addWidget(self.card_key, 0, 1)
 
         # Карточка 3: Распознавание речи STT
-        self.card_stt = self._create_status_card("🧠 Faster-Whisper", "CUDA (RTX 5050)", "#34D399")
+        self.card_stt = self._create_status_card("🧠 Faster-Whisper", "Turbo (RTX 5050)", "#34D399")
         grid_cards.addWidget(self.card_stt, 0, 2)
 
         # Карточка 4: Модуль ИИ
@@ -315,28 +315,22 @@ class MainWindow(QMainWindow):
         mic_layout.addWidget(self.cb_microphones)
         sett_layout.addWidget(mic_box)
 
-        # 2.1 Выбор модели распознавания речи (Faster-Whisper)
+        # 2.1 Модель распознавания речи (Faster-Whisper Large-v3-Turbo)
         stt_box = QGroupBox("Модель распознавания речи (Faster-Whisper)", tab_settings_content)
         stt_layout = QVBoxLayout(stt_box)
         stt_layout.setSpacing(6)
 
-        lbl_stt = QLabel("Модель Whisper для преобразования голоса в текст:", stt_box)
+        lbl_stt = QLabel("Используемая модель Whisper для преобразования голоса в текст:", stt_box)
         lbl_stt.setStyleSheet("color: #9CA3AF; font-size: 11px;")
         stt_layout.addWidget(lbl_stt)
 
         self.cb_stt_model = QComboBox(stt_box)
-        self.cb_stt_model.addItem("🚀 Turbo (Large-v3-Turbo: флагманская точность, ~800M) — Рекомендуется", "turbo")
-        self.cb_stt_model.addItem("⚡ Medium (Высокая точность русской речи, ~769M)", "medium")
-        self.cb_stt_model.addItem("Базовая Small (Экономичная, ~244M)", "small")
-
-        cur_stt = self.settings.get("stt_model", "turbo")
-        idx = self.cb_stt_model.findData(cur_stt)
-        if idx >= 0:
-            self.cb_stt_model.setCurrentIndex(idx)
-        self.cb_stt_model.currentIndexChanged.connect(self._on_stt_model_selected)
+        self.cb_stt_model.addItem("🚀 Turbo (Large-v3-Turbo: флагманская точность русской речи, 800M)", "turbo")
+        self.cb_stt_model.setCurrentIndex(0)
+        self.cb_stt_model.setEnabled(False)
         stt_layout.addWidget(self.cb_stt_model)
 
-        lbl_stt_tip = QLabel("Turbo обеспечивает максимальную точность распознавания русских фраз и технических терминов.", stt_box)
+        lbl_stt_tip = QLabel("Модель Large-v3-Turbo зафиксирована как основная: обеспечивает эталонную точность на GPU RTX 5050.", stt_box)
         lbl_stt_tip.setStyleSheet("color: #6B7280; font-size: 11px;")
         stt_layout.addWidget(lbl_stt_tip)
 

@@ -26,7 +26,7 @@ for dll_sub in [
 from faster_whisper import WhisperModel
 
 class SpeechToText:
-    def __init__(self, model_size: str = "small", device: str = "cuda"):
+    def __init__(self, model_size: str = "turbo", device: str = "cuda"):
         self.model_size = model_size
         self.device = device
         self._model: Optional[WhisperModel] = None

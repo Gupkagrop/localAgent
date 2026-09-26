@@ -4,8 +4,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.speech_to_text import SpeechToText
 
-print("--- ТЕСТ ЗАГРУЗКИ FASTER-WHISPER НА CUDA ---")
-stt = SpeechToText(model_size="small", device="cuda")
+print("--- ТЕСТ ЗАГРУЗКИ FASTER-WHISPER TURBO НА CUDA ---")
+stt = SpeechToText(model_size="turbo", device="cuda")
 print("Загружаю модель в память GPU (CUDA)...")
 success = stt.load_model()
 print("Статус загрузки:", success)

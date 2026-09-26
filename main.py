@@ -229,7 +229,7 @@ class AppCoordinator(QObject):
         self.tts.voice_name = tts_voice
         self.tts.speed = sapi_speed
 
-        stt_model = settings.get("stt_model", "small")
+        stt_model = settings.get("stt_model", "turbo")
         if self.stt.model_size != stt_model:
             self.stt.unload_model()
             self.stt.model_size = stt_model
@@ -325,12 +325,12 @@ class AppCoordinator(QObject):
     def _run_test_stt(self):
         """Тестирует скорость и работоспособность Faster-Whisper на GPU CUDA."""
         def worker():
-            self.log("🧠 Тестирование Faster-Whisper на GPU NVIDIA GeForce RTX 5050 (CUDA)...")
+            self.log("🧠 Тестирование Faster-Whisper Turbo на GPU NVIDIA GeForce RTX 5050 (CUDA)...")
             start = time.time()
             ok = self.stt.load_model()
             duration = time.time() - start
             if ok:
-                self.log(f"✓ Faster-Whisper Small успешно проверен на CUDA! (Время отклика: {duration:.2f} сек)")
+                self.log(f"✓ Faster-Whisper Turbo успешно проверен на CUDA! (Время отклика: {duration:.2f} сек)")
             else:
                 self.log("⚠ Ошибка инференса на CUDA. Проверьте видеодрайвер NVIDIA.")
         threading.Thread(target=worker, daemon=True).start()
@@ -441,11 +441,11 @@ class AppCoordinator(QObject):
                 has_cuda = cuda_count > 0 and "float16" in supported_types
                 stt_loaded = self.stt.load_model()
                 if stt_loaded and has_cuda:
-                    self.card_status_signal.emit("stt", "CUDA float16 (RTX 5050)", "#34D399")
-                    self.log("[3/7] 🧠 Faster-Whisper: OK (CUDA float16 активна на RTX 5050)")
-                    summary_results.append("Faster-Whisper (CUDA): OK")
+                    self.card_status_signal.emit("stt", "Turbo CUDA (RTX 5050)", "#34D399")
+                    self.log("[3/7] 🧠 Faster-Whisper: OK (Turbo CUDA float16 активна на RTX 5050)")
+                    summary_results.append("Faster-Whisper (Turbo): OK")
                 elif stt_loaded:
-                    self.card_status_signal.emit("stt", "CPU (int8)", "#F59E0B")
+                    self.card_status_signal.emit("stt", "Turbo CPU (int8)", "#F59E0B")
                     self.log("[3/7] 🧠 Faster-Whisper: OK (Работает в режиме CPU)")
                     summary_results.append("Faster-Whisper (CPU): OK")
                 else:

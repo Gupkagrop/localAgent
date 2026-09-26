@@ -93,10 +93,10 @@ def test_audio_and_ducking():
     return True
 
 def test_stt_cuda():
-    print_section("4. ПРОВЕРКА FASTER-WHISPER НА CUDA И ВЫГРУЗКИ VRAM")
+    print_section("4. ПРОВЕРКА FASTER-WHISPER TURBO НА CUDA И ВЫГРУЗКИ VRAM")
     from core.speech_to_text import SpeechToText
-    stt = SpeechToText(model_size="small", device="cuda")
-    print("  Загрузка Faster-Whisper Small в память GPU...")
+    stt = SpeechToText(model_size="turbo", device="cuda")
+    print("  Загрузка Faster-Whisper Turbo в память GPU...")
     loaded = stt.load_model()
     if not loaded:
         print("  [FAIL] Не удалось загрузить STT на CUDA!")
