@@ -128,14 +128,25 @@ class CommandExecutor:
                 self.log(f"Ошибка запуска приложения {target}: {e}")
                 return False, f"Не удалось запустить {target}"
 
-        # 6. Открытие веб-ссылок
+        # 6. Открытие веб-ссылок и прямое воспроизведение роликов
         if action == "open_url":
+            target_url = str(target)
+            if params.get("direct_play"):
+                query = params.get("query", "")
+                sort_by_date = params.get("sort_by_date", False)
+                resolved_url = self._resolve_youtube_video(query, sort_by_date=sort_by_date)
+                if resolved_url:
+                    target_url = resolved_url
+
             try:
-                webbrowser.open(target)
-                self.log(f"Открыта ссылка в браузере: {target}")
+                webbrowser.open(target_url)
+                self.log(f"Открыта ссылка в браузере: {target_url}")
+                if "watch?v=" in target_url:
+                    return True, "Включено видео на YouTube"
                 return True, "Открыто в браузере"
             except Exception as e:
                 return False, f"Ошибка открытия ссылки: {e}"
+
 
         # 7. Системные действия (выключение/перезагрузка)
         if action == "system_action":
@@ -297,3 +308,39 @@ class CommandExecutor:
             return True, "Предыдущий трек"
 
         return False, "Неизвестное медиа-действие"
+
+    def _resolve_youtube_video(self, query: str, sort_by_date: bool = False) -> str:
+        """Ищет прямой URL первого видео на YouTube для немедленного запуска воспроизведения."""
+        import urllib.parse
+        import urllib.request
+
+        clean_query = query.strip()
+        if not clean_query:
+            return "https://www.youtube.com"
+
+        encoded = urllib.parse.quote(clean_query)
+        search_url = f"https://www.youtube.com/results?search_query={encoded}"
+        if sort_by_date:
+            search_url += "&sp=CAI%253D"
+
+        req = urllib.request.Request(
+            search_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
+            }
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=3.5) as resp:
+                data = resp.read().decode("utf-8", errors="ignore")
+                ids = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"', data)
+                if ids:
+                    unique_ids = list(dict.fromkeys(ids))
+                    top_url = f"https://www.youtube.com/watch?v={unique_ids[0]}"
+                    self.log(f"Найдено видео YouTube для воспроизведения: {top_url}")
+                    return top_url
+        except Exception as e:
+            self.log(f"Предупреждение: не удалось извлечь прямой ролик YouTube ({e}), используем поиск.")
+
+        return search_url
+

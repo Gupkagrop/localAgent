@@ -230,52 +230,38 @@ class DecisionEngine:
                 "parameters": {}
             }
 
-        # 5. Веб-поиск, YouTube и ссылки
-        # 5.1 Специальный обработчик YouTube (ютуб, ютубчик, youtube) с поиском и воспроизведением
-        if re.search(r"(?:ютуб\w*|youtube)", text):
-            # Проверяем наличие поискового запроса или намерения воспроизведения
-            search_query = ""
-            match_play = re.search(
-                r"(?:включи|найди|поищи|покажи|видео|клип|ролик|песн\w*|трек|фильм)\s+(?:там\s+)?(.+)",
-                cleaned_raw,
-                flags=re.IGNORECASE
-            )
-            if match_play:
-                search_query = match_play.group(1).strip()
-            else:
-                match_yt_tail = re.search(r"(?:ютуб\w*|youtube)\s+(.+)", cleaned_raw, flags=re.IGNORECASE)
-                if match_yt_tail:
-                    search_query = match_yt_tail.group(1).strip()
+        # Извлекаем слова без пунктуации для быстрого поиска
+        words = [re.sub(r"[^\w-]", "", w) for w in text.split()]
 
-            if search_query:
-                # Очищаем от служебных слов («на ютубе», «пожалуйста», «в браузере», «и»)
-                search_query = re.sub(r"(?:на\s+|в\s+)?(?:ютуб\w*|youtube)", "", search_query, flags=re.IGNORECASE)
-                search_query = re.sub(r"^(?:и\s+|включи\s+|найди\s+|поищи\s+|там\s+)+", "", search_query, flags=re.IGNORECASE)
-                search_query = re.sub(r"\b(?:пожалуйста|в браузере)\b", "", search_query, flags=re.IGNORECASE).strip()
-                search_query = re.sub(r"\s+", " ", search_query).strip()
+        # 5. Специфические страницы сайтов (многословные URL из commands.json)
+        # Сортируем по убыванию длины, чтобы составные («сообщения вк») проверялись до («вк»)
+        multi_word_urls = [(k, v) for k, v in self.url_map.items() if " " in k]
+        multi_word_urls.sort(key=lambda x: len(x[0]), reverse=True)
+        norm_text = re.sub(r"\b(в|во|на|к)\b", " ", text)
+        norm_text = re.sub(r"\s+", " ", norm_text).strip()
 
-            if search_query:
+        for site_key, site_url in multi_word_urls:
+            if site_key in text or site_key in norm_text:
                 return {
                     "action": "open_url",
-                    "target": f"https://www.youtube.com/results?search_query={search_query}",
-                    "parameters": {"query": search_query}
+                    "target": site_url,
+                    "parameters": {"site": site_key}
                 }
-            return {
-                "action": "open_url",
-                "target": "https://www.youtube.com",
-                "parameters": {}
-            }
+            key_words = site_key.split()
+            all_present = True
+            for kw in key_words:
+                kw_stem = kw[:-1] if len(kw) >= 5 else kw
+                if not any(w.startswith(kw_stem) for w in words):
+                    all_present = False
+                    break
+            if all_present:
+                return {
+                    "action": "open_url",
+                    "target": site_url,
+                    "parameters": {"site": site_key}
+                }
 
-        # 5.2 Поиск в Google
-        if text.startswith("найди в гугле") or text.startswith("поищи") or text.startswith("найди"):
-            query_part = re.sub(r"^(найди в гугле|поищи|найди)\s+", "", cleaned_raw, flags=re.IGNORECASE).strip()
-            return {
-                "action": "open_url",
-                "target": f"https://www.google.com/search?q={query_part}",
-                "parameters": {"query": query_part}
-            }
-
-        # 5.3 Прямые доменные имена и ссылки (например: «открой vk.com в браузере»)
+        # 6. Прямые доменные имена и ссылки (например: «открой vk.com в браузере»)
         # Проверяются ДО списка приложений, чтобы слова вроде «браузер» не перехватывали URL
         domain_match = re.search(
             r'([a-zA-Z0-9-]+\.(?:com|ru|org|net|io|dev|ai|me|info|biz|рф)(?:/[^\s]*)?)',
@@ -291,22 +277,8 @@ class DecisionEngine:
                 "parameters": {"domain": dom}
             }
 
-        # 5.4 Динамические URL из commands.json
-        # Очищаем слова от знаков препинания для точного совпадения («вк,» -> «вк»)
-        words = [re.sub(r"[^\w-]", "", w) for w in text.split()]
-        for site_key, site_url in self.url_map.items():
-            matches = any(
-                w == site_key or (len(site_key) >= 4 and w.startswith(site_key[:-1]))
-                for w in words
-            )
-            if site_key in text or matches:
-                return {
-                    "action": "open_url",
-                    "target": site_url,
-                    "parameters": {"site": site_key}
-                }
-
-        # 6. Запуск программ (динамически из commands.json + встроенные)
+        # 7. Запуск программ (из commands.json)
+        # Проверяется ДО общего поиска/медиа, чтобы «включи калькулятор» открывало calc.exe
         for name, cmd in self.app_map.items():
             matches = any(
                 w == name or (len(name) >= 4 and w.startswith(name[:-1]))
@@ -318,6 +290,97 @@ class DecisionEngine:
                     "target": cmd,
                     "parameters": {"app_name": name}
                 }
+
+        # 8. Поиск в Google (если явно упомянут Google / в гугле)
+        if "в гугле" in text or "гугл" in text or "google" in text:
+            query_part = re.sub(r"^(найди в гугле|поищи в гугле|найди|поищи|гугл)\s+", "", cleaned_raw, flags=re.IGNORECASE)
+            query_part = re.sub(r"\b(?:в гугле|в google|гугл|google)\b", "", query_part, flags=re.IGNORECASE).strip()
+            return {
+                "action": "open_url",
+                "target": f"https://www.google.com/search?q={query_part}",
+                "parameters": {"query": query_part}
+            }
+
+        # 9. YouTube (поиск, каналы, прямое воспроизведение треков/видео)
+        has_yt_keyword = bool(re.search(r"(?:ютуб\w*|youtube)", text))
+        has_play_intent = bool(re.search(
+            r"\b(?:включи\w*|поставь|воспроизведи|вруби|запусти|послушать|слушать|глянуть|посмотреть)\b",
+            text
+        ))
+        has_media_noun = bool(re.search(
+            r"\b(?:видео|ролик|клип|песн\w*|трек|фильм)\b",
+            text
+        ))
+
+        if has_yt_keyword or has_play_intent or (has_media_noun and not any(w in text for w in ["пауза", "стоп", "громк"])):
+            is_latest = bool(re.search(r"\b(?:последн\w*|свеж\w*|нов\w*|крайн\w*)\b", text))
+            is_search_only = bool(re.search(r"\b(?:найди|поищи|список)\b", text)) and not has_play_intent
+            is_direct_play = not is_search_only and (has_play_intent or has_media_noun or is_latest)
+
+            # Извлекаем тему / поисковый запрос
+            search_query = cleaned_raw
+            # Очищаем упоминание сервиса
+            search_query = re.sub(r"(?:на\s+|в\s+)?(?:ютуб\w*|youtube)", "", search_query, flags=re.IGNORECASE)
+            # Очищаем глаголы
+            search_query = re.sub(
+                r"\b(?:открой|запусти|включи\w*|поставь|воспроизведи|вруби|найди|поищи|покажи|послушать|слушать|глянуть|посмотреть)\b",
+                "",
+                search_query,
+                flags=re.IGNORECASE
+            )
+            # Очищаем медиа-существительные
+            search_query = re.sub(r"\b(?:видео|ролик|клип|песн\w*|трек|фильм)\b", "", search_query, flags=re.IGNORECASE)
+            # Очищаем слова свежести
+            if is_latest:
+                search_query = re.sub(r"\b(?:последн\w*|свеж\w*|нов\w*|крайн\w*)\b", "", search_query, flags=re.IGNORECASE)
+            # Очищаем вводные слова
+            search_query = re.sub(r"\b(?:пожалуйста|плиз|там|в браузере|и)\b", "", search_query, flags=re.IGNORECASE)
+            search_query = re.sub(r"\s+", " ", search_query).strip()
+
+            if search_query:
+                target_url = f"https://www.youtube.com/results?search_query={search_query}"
+                if is_latest:
+                    target_url += "&sp=CAI%253D"
+                return {
+                    "action": "open_url",
+                    "target": target_url,
+                    "parameters": {
+                        "query": search_query,
+                        "direct_play": is_direct_play,
+                        "sort_by_date": is_latest
+                    }
+                }
+            if has_yt_keyword:
+                return {
+                    "action": "open_url",
+                    "target": "https://www.youtube.com",
+                    "parameters": {}
+                }
+
+        # 10. Общий поиск в Google («найди ...», «поищи ...»)
+        if text.startswith("найди") or text.startswith("поищи"):
+            query_part = re.sub(r"^(найди|поищи)\s+", "", cleaned_raw, flags=re.IGNORECASE).strip()
+            return {
+                "action": "open_url",
+                "target": f"https://www.google.com/search?q={query_part}",
+                "parameters": {"query": query_part}
+            }
+
+        # 11. Однословные URL из commands.json («ютуб», «вк», «гитхаб», «почта»)
+        single_word_urls = [(k, v) for k, v in self.url_map.items() if " " not in k]
+        for site_key, site_url in single_word_urls:
+            matches = any(
+                w == site_key or (len(site_key) >= 4 and w.startswith(site_key[:-1]))
+                for w in words
+            )
+            if site_key in text or matches:
+                return {
+                    "action": "open_url",
+                    "target": site_url,
+                    "parameters": {"site": site_key}
+                }
+
+
 
         # 7. Потенциально опасные команды (требующие подтверждения)
         if any(kw in text for kw in ["выключи ноутбук", "выключи компьютер", "заверши работу"]):

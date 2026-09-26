@@ -102,6 +102,54 @@ class TestDecisionEngine(unittest.TestCase):
         self.assertEqual(res["target"], "shutdown")
         self.assertTrue(res["parameters"].get("dangerous"))
 
+    def test_youtube_direct_play_latest(self):
+        # Проверка намерения прямого воспроизведения последнего ролика
+        res = self.engine.parse_command("На ютуб включить последнее видео мармука")
+        self.assertEqual(res["action"], "open_url")
+        self.assertTrue(res["parameters"].get("direct_play"))
+        self.assertTrue(res["parameters"].get("sort_by_date"))
+        self.assertIn("мармук", res["parameters"]["query"])
+        self.assertIn("sp=CAI", res["target"])
+
+    def test_youtube_direct_play_without_keyword_youtube(self):
+        # Проверка включения ролика без явного произнесения слова «ютуб»
+        res = self.engine.parse_command("Включи последнее видео мармука")
+        self.assertEqual(res["action"], "open_url")
+        self.assertTrue(res["parameters"].get("direct_play"))
+        self.assertTrue(res["parameters"].get("sort_by_date"))
+        self.assertIn("мармук", res["parameters"]["query"])
+
+    def test_subpage_vk_messages(self):
+        # Проверка открытия страницы сообщений ВК
+        res = self.engine.parse_command("Открой сообщения вк")
+        self.assertEqual(res["action"], "open_url")
+        self.assertEqual(res["target"], "https://vk.com/im")
+
+    def test_subpage_vk_messages_with_preposition(self):
+        # Проверка открытия сообщений ВК с предлогом («в вк»)
+        res = self.engine.parse_command("Перейди в сообщения в вк")
+        self.assertEqual(res["action"], "open_url")
+        self.assertEqual(res["target"], "https://vk.com/im")
+
+    def test_subpage_youtube_subscriptions(self):
+        # Проверка открытия подписок на YouTube
+        res = self.engine.parse_command("Открой подписки на ютубе")
+        self.assertEqual(res["action"], "open_url")
+        self.assertEqual(res["target"], "https://www.youtube.com/feed/subscriptions")
+
+    def test_subpage_github_trending(self):
+        # Проверка открытия трендов GitHub
+        res = self.engine.parse_command("Покажи тренды гитхаб")
+        self.assertEqual(res["action"], "open_url")
+        self.assertEqual(res["target"], "https://github.com/trending")
+
+    def test_subpage_mail_inbox(self):
+        # Проверка открытия входящих в почте
+        res = self.engine.parse_command("Открой входящие в почте")
+        self.assertEqual(res["action"], "open_url")
+        self.assertEqual(res["target"], "https://mail.google.com/mail/u/0/#inbox")
+
+
 from core.executor import CommandExecutor
 from core.keyboard_hook import CopilotKeyHook, VK_F23, VK_F23_ALT
 
@@ -170,6 +218,46 @@ class TestCoreModules(unittest.TestCase):
             ok, msg = executor.execute(cmd)
             self.assertTrue(ok)
             mock_open.assert_called_once_with("https://vk.com")
+
+    def test_executor_open_url_direct_play(self):
+        executor = CommandExecutor()
+        cmd = {
+            "action": "open_url",
+            "target": "https://www.youtube.com/results?search_query=мармук",
+            "parameters": {"query": "мармук", "direct_play": True, "sort_by_date": True}
+        }
+        import unittest.mock as mock
+        with mock.patch.object(executor, "_resolve_youtube_video", return_value="https://www.youtube.com/watch?v=EjavzU6L2YM") as mock_res:
+            with mock.patch("webbrowser.open") as mock_open:
+                ok, msg = executor.execute(cmd)
+                self.assertTrue(ok)
+                mock_res.assert_called_once_with("мармук", sort_by_date=True)
+                mock_open.assert_called_once_with("https://www.youtube.com/watch?v=EjavzU6L2YM")
+                self.assertIn("YouTube", msg)
+
+    def test_executor_resolve_youtube_video_mocked(self):
+        executor = CommandExecutor()
+        import io
+        import unittest.mock as mock
+        class MockResp(io.BytesIO):
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+
+        mock_response = MockResp(b'some html "videoId":"TestVideo11" and more html')
+        with mock.patch("urllib.request.urlopen", return_value=mock_response):
+            video_url = executor._resolve_youtube_video("тест")
+            self.assertEqual(video_url, "https://www.youtube.com/watch?v=TestVideo11")
+
+
+    def test_executor_resolve_youtube_video_fallback_on_error(self):
+        executor = CommandExecutor()
+        import unittest.mock as mock
+        with mock.patch("urllib.request.urlopen", side_effect=Exception("Network error")):
+            fallback_url = executor._resolve_youtube_video("тест", sort_by_date=True)
+            self.assertIn("youtube.com/results?search_query=", fallback_url)
+            self.assertIn("sp=CAI", fallback_url)
 
 class TestConfigs(unittest.TestCase):
     def test_settings_integrity(self):
