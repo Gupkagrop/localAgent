@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QTabWidget, QCheckBox, QComboBox, QProgressBar,
     QPlainTextEdit, QGroupBox, QRadioButton, QButtonGroup, QMessageBox,
-    QFrame, QScrollArea, QGridLayout, QLineEdit
+    QFrame, QScrollArea, QGridLayout, QLineEdit, QSpinBox
 )
 from PyQt6.QtGui import QFont, QCloseEvent
 
@@ -37,7 +37,7 @@ class MainWindow(QMainWindow):
         self.config_path = config_path
         self.settings = self._load_settings()
 
-        self.setWindowTitle("Antigravity Voice • Панель управления")
+        self.setWindowTitle("Antigravity Voice & Vision • Панель управления")
         self.resize(840, 700)
         self.setMinimumSize(720, 520)
 
@@ -151,11 +151,11 @@ class MainWindow(QMainWindow):
         grid_cards.addWidget(self.card_stt, 0, 2)
 
         # Карточка 4: Модуль ИИ
-        self.card_ai = self._create_status_card("🤖 Модуль ИИ", "Fast-Path (0 мс)", "#60A5FA")
+        self.card_ai = self._create_status_card("🤖 Vision-агент", "Jedi-3B (Always-Warm)", "#34D399")
         grid_cards.addWidget(self.card_ai, 1, 0)
 
         # Карточка 5: Видеопамять VRAM
-        self.card_vram = self._create_status_card("⚡ Расход VRAM", "~550 МБ (Экономный)", "#60A5FA")
+        self.card_vram = self._create_status_card("⚡ Расход VRAM", "~4.7 ГБ (RTX 5050)", "#60A5FA")
         grid_cards.addWidget(self.card_vram, 1, 1)
 
         # Карточка 6: Antigravity IDE
@@ -187,7 +187,7 @@ class MainWindow(QMainWindow):
         btn_test_stt.clicked.connect(self.test_stt_requested.emit)
         test_buttons_row.addWidget(btn_test_stt)
 
-        self.btn_download_llm = QPushButton("📥 Скачать Qwen2.5 (1.1 ГБ)", health_box)
+        self.btn_download_llm = QPushButton("✓ Vision Jedi-3B (Готова)", health_box)
         self.btn_download_llm.clicked.connect(self.download_llm_requested.emit)
         test_buttons_row.addWidget(self.btn_download_llm)
 
@@ -337,6 +337,49 @@ class MainWindow(QMainWindow):
 
         sett_layout.addWidget(stt_box)
 
+        # 2.2 Модуль автономного управления Vision Computer-Use (Jedi-3B 1080p)
+        vision_box = QGroupBox("Автономный агент интерфейса (Vision Computer-Use)", tab_settings_content)
+        vision_layout = QVBoxLayout(vision_box)
+        vision_layout.setSpacing(8)
+
+        lbl_vlm = QLabel("Мультимодальная модель компьютерного зрения (VLM):", vision_box)
+        lbl_vlm.setStyleSheet("color: #9CA3AF; font-size: 11px;")
+        vision_layout.addWidget(lbl_vlm)
+
+        self.cb_vision_model = QComboBox(vision_box)
+        self.cb_vision_model.addItem("👁 Jedi-3B (1080p Desktop Agent, 4-bit NF4)", "xlangai/Jedi-3B-1080p")
+        self.cb_vision_model.addItem("⚡ Qwen2.5-VL-3B-Instruct (Резервная VLM)", "Qwen/Qwen2.5-VL-3B-Instruct")
+        saved_vision_model = self.settings.get("vision_model", "xlangai/Jedi-3B-1080p")
+        idx = self.cb_vision_model.findData(saved_vision_model)
+        if idx >= 0:
+            self.cb_vision_model.setCurrentIndex(idx)
+        self.cb_vision_model.currentIndexChanged.connect(self._on_vision_model_selected)
+        vision_layout.addWidget(self.cb_vision_model)
+
+        steps_row = QHBoxLayout()
+        lbl_steps = QLabel("Лимит автономных шагов (Sense-Act-Verify):", vision_box)
+        lbl_steps.setStyleSheet("color: #D1D5DB; font-size: 12px;")
+        steps_row.addWidget(lbl_steps)
+        self.sp_max_steps = QSpinBox(vision_box)
+        self.sp_max_steps.setRange(1, 20)
+        self.sp_max_steps.setValue(int(self.settings.get("vision_max_steps", 8)))
+        self.sp_max_steps.valueChanged.connect(self._on_max_steps_changed)
+        steps_row.addWidget(self.sp_max_steps)
+        steps_row.addStretch()
+        vision_layout.addLayout(steps_row)
+
+        self.cb_auto_focus_chrome = QCheckBox("Автоматически фокусировать Google Chrome перед веб-задачами", vision_box)
+        self.cb_auto_focus_chrome.setChecked(self.settings.get("vision_auto_focus_browser", True))
+        self.cb_auto_focus_chrome.toggled.connect(self._on_auto_focus_chrome_toggled)
+        vision_layout.addWidget(self.cb_auto_focus_chrome)
+
+        lbl_vision_tip = QLabel("Модель работает в изолированном процессе Always-Warm (~3.2 ГБ VRAM). При остановке ассистента память сбрасывается до 0 МБ.", vision_box)
+        lbl_vision_tip.setStyleSheet("color: #6B7280; font-size: 11px;")
+        lbl_vision_tip.setWordWrap(True)
+        vision_layout.addWidget(lbl_vision_tip)
+
+        sett_layout.addWidget(vision_box)
+
         # 3. Интеграция с Windows и автозапуск
         sys_box = QGroupBox("Автозапуск и системные параметры", tab_settings_content)
         sys_layout = QVBoxLayout(sys_box)
@@ -478,8 +521,10 @@ class MainWindow(QMainWindow):
             """)
             self.btn_toggle_agent.setText("Остановить ассистента")
             self.btn_toggle_agent.setObjectName("DangerButton")
-            self.card_vram.status_label.setText("~550 МБ (Экономный)")
+            self.card_vram.status_label.setText("~4.7 ГБ (RTX 5050)")
             self.card_vram.status_label.setStyleSheet("color: #60A5FA;")
+            self.card_ai.status_label.setText("Jedi-3B (Always-Warm)")
+            self.card_ai.status_label.setStyleSheet("color: #34D399;")
         else:
             self.status_badge.setText("⚪ ОСТАНОВЛЕН (0 МБ VRAM)")
             self.status_badge.setStyleSheet("""
@@ -493,6 +538,8 @@ class MainWindow(QMainWindow):
             self.btn_toggle_agent.setObjectName("PrimaryButton")
             self.card_vram.status_label.setText("0 МБ VRAM (Свободна)")
             self.card_vram.status_label.setStyleSheet("color: #9CA3AF;")
+            self.card_ai.status_label.setText("Выгружен (0 МБ)")
+            self.card_ai.status_label.setStyleSheet("color: #9CA3AF;")
 
         self.btn_toggle_agent.style().unpolish(self.btn_toggle_agent)
         self.btn_toggle_agent.style().polish(self.btn_toggle_agent)
@@ -519,15 +566,32 @@ class MainWindow(QMainWindow):
 
     def set_llm_status(self, is_installed: bool):
         if is_installed:
-            self.card_ai.status_label.setText("Локальная LLM (Qwen2.5)")
+            self.card_ai.status_label.setText("Jedi-3B (Always-Warm)")
             self.card_ai.status_label.setStyleSheet("color: #34D399;")
-            self.btn_download_llm.setText("✓ Qwen2.5 установлена")
+            self.btn_download_llm.setText("✓ Jedi-3B (1080p) готова")
             self.btn_download_llm.setEnabled(False)
         else:
             self.card_ai.status_label.setText("Fast-Path (0 мс, 0 МБ)")
             self.card_ai.status_label.setStyleSheet("color: #60A5FA;")
-            self.btn_download_llm.setText("📥 Скачать Qwen2.5 (1.1 ГБ)")
+            self.btn_download_llm.setText("📥 Скачать Jedi-3B (1080p)")
             self.btn_download_llm.setEnabled(True)
+
+    def _on_vision_model_selected(self, index: int):
+        model_val = self.cb_vision_model.itemData(index)
+        if model_val:
+            self.settings["vision_model"] = model_val
+            self.save_settings()
+            self.log(f"Настройки: выбрана модель Vision-агента «{model_val}».")
+
+    def _on_max_steps_changed(self, val: int):
+        self.settings["vision_max_steps"] = val
+        self.save_settings()
+        self.log(f"Настройки: лимит шагов Vision-агента установлен на {val}.")
+
+    def _on_auto_focus_chrome_toggled(self, checked: bool):
+        self.settings["vision_auto_focus_browser"] = checked
+        self.save_settings()
+        self.log(f"Настройки: автофокус браузера {'включен' if checked else 'отключен'}.")
 
     def _on_mic_selected(self, index: int):
         data = self.cb_microphones.currentData()

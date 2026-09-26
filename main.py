@@ -241,6 +241,7 @@ class AppCoordinator(QObject):
             self.listener.stop_wake_word_loop()
 
     def _on_settings_updated(self, settings: dict):
+        self.executor.settings = settings
         tts_voice = settings.get("tts_voice", "ru_RU-irina-medium")
         tts_speed = float(settings.get("tts_speed", 1.0))
         sapi_speed = int(max(-10, min(10, (tts_speed - 1.0) * 10)))
@@ -252,6 +253,11 @@ class AppCoordinator(QObject):
             self.stt.unload_model()
             self.stt.model_size = stt_model
             self.log(f"Модель Faster-Whisper изменена на «{stt_model}».")
+
+        vision_model = settings.get("vision_model", "xlangai/Jedi-3B-1080p")
+        if hasattr(self.vision_manager, "model_name") and self.vision_manager.model_name != vision_model:
+            self.vision_manager.model_name = vision_model
+            self.log(f"Модель Vision-агента изменена на «{vision_model}».")
 
         self._apply_activation_mode()
 
@@ -354,12 +360,12 @@ class AppCoordinator(QObject):
         threading.Thread(target=worker, daemon=True).start()
 
     def _run_download_llm(self):
-        """Скачивает модель Qwen2.5 1.5B GGUF с Hugging Face."""
+        """Скачивает и проверяет модель Jedi-3B 1080p с Hugging Face Hub."""
         self.window.btn_download_llm.setEnabled(False)
         self.window.btn_download_llm.setText("Запуск скачивания...")
 
         def worker():
-            self.log("📥 Запуск загрузки модели Qwen2.5-1.5B Q4 GGUF (~1.0 ГБ)...")
+            self.log("📥 Запуск проверки и загрузки модели xlangai/Jedi-3B-1080p...")
             
             def progress(percent, cur, total):
                 self.llm_download_progress_signal.emit(percent)
@@ -375,12 +381,12 @@ class AppCoordinator(QObject):
     def _on_llm_download_done(self, success: bool):
         if success:
             self.window.set_llm_status(True)
-            self.log("✓ Модель Qwen2.5-1.5B успешно скачана и установлена!")
+            self.log("✓ Модель Jedi-3B-1080p успешно проверена и установлена!")
             self._play_sound("success")
         else:
             self.window.btn_download_llm.setText("📥 Ошибка скачивания (Повторить)")
             self.window.btn_download_llm.setEnabled(True)
-            self.log("⚠ Ошибка загрузки Qwen2.5. Проверьте интернет-соединение.")
+            self.log("⚠ Ошибка загрузки Jedi-3B. Проверьте интернет-соединение.")
             self._play_sound("error")
 
     def _on_check_all_done(self, success: bool, message: str):

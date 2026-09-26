@@ -81,10 +81,18 @@ class DecisionEngine:
         pass
 
     def download_llm_model(self, progress_callback: Optional[Any] = None) -> bool:
-        """Совместимость с UI загрузки (веса скачиваются HuggingFace автоматом)."""
-        if progress_callback:
-            progress_callback(100, 100, 100)
-        return True
+        """Загрузка / проверка наличия весов xlangai/Jedi-3B-1080p в кэше."""
+        try:
+            from huggingface_hub import snapshot_download
+            if progress_callback:
+                progress_callback(50, 50, 100)
+            snapshot_download(repo_id="xlangai/Jedi-3B-1080p")
+            if progress_callback:
+                progress_callback(100, 100, 100)
+            return True
+        except Exception as e:
+            print(f"[DecisionEngine Error loading model] {e}")
+            return False
 
     def parse_command(self, text: str) -> Dict[str, Any]:
         """
