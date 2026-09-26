@@ -184,6 +184,54 @@ class TestDecisionEngine(unittest.TestCase):
         self.assertEqual(res["parameters"]["site"], "wildberries")
         self.assertEqual(res["parameters"]["query"], "кроссовки")
 
+    def test_window_control_close(self):
+        # Проверка закрытия приложений
+        res = self.engine.parse_command("Закрой блокнот")
+        self.assertEqual(res["action"], "window_control")
+        self.assertEqual(res["target"], "close")
+        self.assertEqual(res["parameters"]["app_name"], "блокнот")
+
+    def test_window_control_minimize_and_restore(self):
+        # Проверка сворачивания и рабочего стола
+        res_min = self.engine.parse_command("Сверни блокнот")
+        self.assertEqual(res_min["action"], "window_control")
+        self.assertEqual(res_min["target"], "minimize")
+
+        res_desktop = self.engine.parse_command("Покажи рабочий стол")
+        self.assertEqual(res_desktop["action"], "window_control")
+        self.assertEqual(res_desktop["target"], "minimize_all")
+
+        res_max = self.engine.parse_command("Разверни на весь экран")
+        self.assertEqual(res_max["action"], "window_control")
+        self.assertEqual(res_max["target"], "maximize")
+
+    def test_in_app_typing(self):
+        # Проверка ввода текста в приложение
+        res = self.engine.parse_command("В блокноте напиши купить молоко и хлеб")
+        self.assertEqual(res["action"], "app_type")
+        self.assertEqual(res["target"], "type")
+        self.assertEqual(res["parameters"]["app_name"], "блокнот")
+        self.assertEqual(res["parameters"]["text"], "купить молоко и хлеб")
+
+    def test_in_app_search_telegram(self):
+        # Проверка поиска внутри приложения
+        res = self.engine.parse_command("В телеграме найди проект")
+        self.assertEqual(res["action"], "app_type")
+        self.assertEqual(res["target"], "search")
+        self.assertEqual(res["parameters"]["app_name"], "телеграм")
+        self.assertTrue(res["parameters"]["search_mode"])
+
+    def test_app_tabs_hotkeys(self):
+        # Проверка горячих клавиш вкладок
+        res_tab = self.engine.parse_command("Новая вкладка")
+        self.assertEqual(res_tab["action"], "app_hotkey")
+        self.assertEqual(res_tab["target"], "new_tab")
+
+        res_close = self.engine.parse_command("Закрой вкладку")
+        self.assertEqual(res_close["action"], "app_hotkey")
+        self.assertEqual(res_close["target"], "close_tab")
+
+
 
 
 from core.executor import CommandExecutor
@@ -334,7 +382,61 @@ class TestCoreModules(unittest.TestCase):
             args, _ = mock_open.call_args
             self.assertIn("avito.ru", args[0])
 
+    def test_desktop_app_controller_launch_or_focus_existing(self):
+        from core.app_controller import DesktopAppController
+        ctrl = DesktopAppController()
+        import unittest.mock as mock
+        with mock.patch.object(ctrl, "find_window", return_value=12345):
+            with mock.patch.object(ctrl, "focus_window", return_value=True):
+                ok, msg = ctrl.launch_or_focus("блокнот")
+                self.assertTrue(ok)
+                self.assertIn("Переключено на", msg)
+
+    def test_desktop_app_controller_launch_new(self):
+        from core.app_controller import DesktopAppController
+        ctrl = DesktopAppController()
+        import unittest.mock as mock
+        with mock.patch.object(ctrl, "find_window", side_effect=[None, 12345]):
+            with mock.patch.object(ctrl, "focus_window", return_value=True):
+                with mock.patch("os.startfile") as mock_start:
+                    ok, msg = ctrl.launch_or_focus("блокнот", "notepad.exe")
+                    self.assertTrue(ok)
+                    self.assertIn("Запущено", msg)
+                    mock_start.assert_called_once_with("notepad.exe")
+
+    def test_executor_window_control_execution(self):
+        executor = CommandExecutor()
+        cmd = {"action": "window_control", "target": "close", "parameters": {"app_name": "блокнот"}}
+        import unittest.mock as mock
+        with mock.patch.object(executor.app_controller, "close_app", return_value=(True, "Закрыто: блокнот")) as mock_close:
+            ok, msg = executor.execute(cmd)
+            self.assertTrue(ok)
+            mock_close.assert_called_once_with("блокнот")
+
+    def test_executor_app_type_execution(self):
+        executor = CommandExecutor()
+        cmd = {
+            "action": "app_type",
+            "target": "type",
+            "parameters": {"app_name": "блокнот", "text": "купить молоко", "submit": False, "search_mode": False}
+        }
+        import unittest.mock as mock
+        with mock.patch.object(executor.app_controller, "type_into_app", return_value=(True, "Введено в блокнот")) as mock_type:
+            ok, msg = executor.execute(cmd)
+            self.assertTrue(ok)
+            mock_type.assert_called_once_with("блокнот", "купить молоко", submit=False, search_mode=False)
+
+    def test_executor_app_hotkey_execution(self):
+        executor = CommandExecutor()
+        cmd = {"action": "app_hotkey", "target": "new_tab", "parameters": {"app_name": "браузер"}}
+        import unittest.mock as mock
+        with mock.patch.object(executor.app_controller, "send_app_hotkey", return_value=(True, "Новая вкладка")) as mock_hk:
+            ok, msg = executor.execute(cmd)
+            self.assertTrue(ok)
+            mock_hk.assert_called_once_with("браузер", "new_tab")
+
 class TestConfigs(unittest.TestCase):
+
 
     def test_settings_integrity(self):
         config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "settings.json")

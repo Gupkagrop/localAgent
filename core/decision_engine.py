@@ -233,7 +233,102 @@ class DecisionEngine:
         # Извлекаем слова без пунктуации для быстрого поиска
         words = [re.sub(r"[^\w-]", "", w) for w in text.split()]
 
-        # 5. Специфические страницы сайтов (многословные URL из commands.json)
+        # 5. Управление окнами и вкладками (закрыть, свернуть, развернуть, рабочий стол)
+        if any(kw in text for kw in ["сверни всё", "сверни все", "покажи рабочий стол", "рабочий стол"]):
+            return {
+                "action": "window_control",
+                "target": "minimize_all",
+                "parameters": {}
+            }
+
+        if text.startswith("новая вкладка") or text.startswith("открой новую вкладку"):
+            return {
+                "action": "app_hotkey",
+                "target": "new_tab",
+                "parameters": {"app_name": "браузер"}
+            }
+
+        if text.startswith("закрой вкладку"):
+            return {
+                "action": "app_hotkey",
+                "target": "close_tab",
+                "parameters": {"app_name": "браузер"}
+            }
+
+        if any(kw in text for kw in ["разверни на весь экран", "на весь экран", "разверни окно"]):
+            target_app = re.sub(r"\b(?:разверни|на весь экран|окно|приложение)\b", "", text).strip()
+            return {
+                "action": "window_control",
+                "target": "maximize",
+                "parameters": {"app_name": target_app or "окно"}
+            }
+
+        if text.startswith("сверни"):
+            target_app = re.sub(r"^сверни\s*", "", text).strip()
+            return {
+                "action": "window_control",
+                "target": "minimize",
+                "parameters": {"app_name": target_app or "окно"}
+            }
+
+        if text.startswith("закрой") and not any(kw in text for kw in ["вкладку", "звук", "ноутбук", "компьютер"]):
+            target_app = re.sub(r"^закрой\s*(?:окно|программу|приложение)?\s*", "", text).strip()
+            return {
+                "action": "window_control",
+                "target": "close",
+                "parameters": {"app_name": target_app or "окно"}
+            }
+
+        # 6. Ввод текста и поиск внутри приложений (In-App Automation)
+        # 6.1 Поиск внутри мессенджеров / приложений: «в телеграме найди [текст]»
+        m_app_search = re.search(
+            r"(?:в|во|открой)\s+([a-zA-Zа-яА-Я0-9_.-]+)\s+(?:и\s+)?(?:найди|поищи)\s+(.+)",
+            cleaned_raw,
+            flags=re.IGNORECASE
+        )
+        if m_app_search:
+            app_raw = self._normalize_site_name(m_app_search.group(1).lower())
+            if app_raw in ["телеграм", "telegram", "проводник", "explorer", "блокнот", "notepad"]:
+                return {
+                    "action": "app_type",
+                    "target": "search",
+                    "parameters": {
+                        "app_name": app_raw,
+                        "text": m_app_search.group(2).strip(),
+                        "search_mode": True,
+                        "submit": True
+                    }
+                }
+
+
+        # 6.2 Ввод текста в блокнот или любое приложение: «в блокноте напиши [текст]», «открой блокнот и напиши [текст]»
+        m_app_type = re.search(
+            r"(?:в|во|открой)\s+([a-zA-Zа-яА-Я0-9_.-]+)\s+(?:и\s+)?(?:напиши|напечатай|введи|вставь)\s+(.+)",
+            cleaned_raw,
+            flags=re.IGNORECASE
+        )
+        if not m_app_type:
+            m_app_type = re.search(
+                r"(?:напиши|напечатай|введи|вставь)\s+(?:в|во)\s+([a-zA-Zа-яА-Я0-9_.-]+)\s+(.+)",
+                cleaned_raw,
+                flags=re.IGNORECASE
+            )
+        if m_app_type:
+            app_raw = m_app_type.group(1).lower()
+            if "antigravity" not in app_raw and "антигравити" not in app_raw:
+                return {
+                    "action": "app_type",
+                    "target": "type",
+                    "parameters": {
+                        "app_name": self._normalize_site_name(app_raw),
+                        "text": m_app_type.group(2).strip(),
+                        "search_mode": False,
+                        "submit": False
+                    }
+                }
+
+        # 7. Специфические страницы сайтов (многословные URL из commands.json)
+
         # Сортируем по убыванию длины, чтобы составные («сообщения вк») проверялись до («вк»)
         multi_word_urls = [(k, v) for k, v in self.url_map.items() if " " in k]
         multi_word_urls.sort(key=lambda x: len(x[0]), reverse=True)

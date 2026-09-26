@@ -17,6 +17,7 @@ import win32clipboard
 
 from core.audio_ducking import AudioDucker
 from core.chrome_cdp import ChromeCDPController
+from core.app_controller import DesktopAppController
 
 # Виртуальные коды мультимедиа-клавиш Windows
 VK_MEDIA_NEXT_TRACK = 0xB0
@@ -40,10 +41,12 @@ class CommandExecutor:
         self.audio_ducker = audio_ducker or AudioDucker()
         self.on_log = on_log
         self.chrome_cdp = ChromeCDPController(on_log=self.log)
+        self.app_controller = DesktopAppController(on_log=self.log)
         self.commands_config = self._load_commands_config()
         antigravity_cfg = self.commands_config.get("antigravity", {})
         self.gui_window_names: list[str] = antigravity_cfg.get("gui_window_names", ["Antigravity", "antigravity"])
         self.cli_executable: str = antigravity_cfg.get("cli_executable", "agy")
+
 
 
     def _load_commands_config(self) -> dict:
@@ -123,13 +126,8 @@ class CommandExecutor:
                 except Exception as e:
                     return False, f"Ошибка открытия ссылки: {e}"
 
-            try:
-                os.startfile(target)
-                self.log(f"Запущено приложение: {target}")
-                return True, f"Запущено: {params.get('app_name', target)}"
-            except Exception as e:
-                self.log(f"Ошибка запуска приложения {target}: {e}")
-                return False, f"Не удалось запустить {target}"
+            app_name = params.get("app_name", target_str)
+            return self.app_controller.launch_or_focus(app_name, target_str)
 
         # 6. Открытие веб-ссылок и прямое воспроизведение роликов
         if action == "open_url":
@@ -165,7 +163,40 @@ class CommandExecutor:
                     return False, f"Ошибка открытия ссылки: {e}"
             return ok, msg
 
-        # 8. Системные действия (выключение/перезагрузка)
+        # 8. Управление окнами приложений (закрыть, свернуть, развернуть, рабочий стол)
+        if action == "window_control":
+            app_name = params.get("app_name", "")
+            if target == "close":
+                return self.app_controller.close_app(app_name)
+            if target == "minimize":
+                return self.app_controller.minimize_app(app_name)
+            if target == "maximize":
+                return self.app_controller.maximize_app(app_name)
+            if target == "minimize_all":
+                return self.app_controller.minimize_all()
+            return False, "Неизвестное действие с окном"
+
+        # 9. Ввод текста и поиск внутри приложений
+        if action == "app_type":
+            app_name = params.get("app_name", "")
+            text_to_type = params.get("text", "")
+            submit = params.get("submit", False)
+            search_mode = params.get("search_mode", False)
+            return self.app_controller.type_into_app(
+                app_name,
+                text_to_type,
+                submit=submit,
+                search_mode=search_mode
+            )
+
+        # 10. Горячие клавиши внутри приложений (новые вкладки и т.д.)
+        if action == "app_hotkey":
+            app_name = params.get("app_name", "текущее")
+            hotkey = target or params.get("hotkey", "")
+            return self.app_controller.send_app_hotkey(app_name, hotkey)
+
+        # 11. Системные действия (выключение/перезагрузка)
+
 
         if action == "system_action":
             confirmed = params.get("confirmed", False)
