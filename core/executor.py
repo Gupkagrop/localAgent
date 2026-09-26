@@ -36,18 +36,28 @@ class CommandExecutor:
         self,
         audio_ducker: Optional[AudioDucker] = None,
         on_log: Optional[Callable[[str], None]] = None,
-        vision_manager: Optional[Any] = None
+        vision_manager: Optional[Any] = None,
+        settings: Optional[dict] = None
     ):
         self.audio_ducker = audio_ducker or AudioDucker()
         self.on_log = on_log
         self.vision_manager = vision_manager
+        self.settings: dict = settings if settings is not None else self._load_settings()
         self.app_controller = DesktopAppController(on_log=self.log)
         self.commands_config = self._load_commands_config()
         antigravity_cfg = self.commands_config.get("antigravity", {})
         self.gui_window_names: list[str] = antigravity_cfg.get("gui_window_names", ["Antigravity", "antigravity"])
         self.cli_executable: str = antigravity_cfg.get("cli_executable", "agy")
 
-
+    def _load_settings(self) -> dict:
+        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "settings.json")
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
 
     def _load_commands_config(self) -> dict:
         config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "commands.json")
@@ -202,6 +212,13 @@ class CommandExecutor:
                     return True, "Перезагрузка компьютера через 15 секунд"
                 except Exception as e:
                     return False, f"Ошибка перезагрузки: {e}"
+            if target == "lock_workstation":
+                try:
+                    ctypes.windll.user32.LockWorkStation()
+                    self.log("Компьютер заблокирован.")
+                    return True, "Компьютер заблокирован"
+                except Exception as e:
+                    return False, f"Ошибка блокировки: {e}"
             return True, "Действие отменено"
 
         # 12. Автономный Vision Computer-Use Agent (Jedi-3B / Qwen2.5-VL)
@@ -228,16 +245,17 @@ class CommandExecutor:
             self.log(f"Предупреждение: Vision-агент не подключен, задача: «{prompt}»")
             return False, "Vision-агент не подключен"
 
-        # Автоматическая фокусировка браузера для веб-задач
-        prompt_lower = prompt.lower()
-        web_keywords = ["ютуб", "youtube", "авито", "avito", "озон", "ozon", "яндекс", "гугл", "google", "вк", "vk", "браузер", "chrome", "сайт", "видео"]
-        if any(w in prompt_lower for w in web_keywords):
-            try:
-                self.log("Активация окна браузера перед запуском анализа экрана...")
-                self.app_controller.launch_or_focus("хром", "chrome.exe")
-                time.sleep(0.35)
-            except Exception as e:
-                self.log(f"Предупреждение при фокусировке браузера: {e}")
+        # Автоматическая фокусировка браузера для веб-задач при включенной настройке
+        if self.settings.get("vision_auto_focus_browser", True):
+            prompt_lower = prompt.lower()
+            web_keywords = ["ютуб", "youtube", "авито", "avito", "озон", "ozon", "яндекс", "гугл", "google", "вк", "vk", "браузер", "chrome", "сайт", "видео"]
+            if any(w in prompt_lower for w in web_keywords):
+                try:
+                    self.log("Активация окна браузера перед запуском анализа экрана...")
+                    self.app_controller.launch_or_focus("хром", "chrome.exe")
+                    time.sleep(0.35)
+                except Exception as e:
+                    self.log(f"Предупреждение при фокусировке браузера: {e}")
 
         if not self.vision_manager.is_running():
             self.log("Инициализация и запуск фонового процесса Vision-агента...")
@@ -363,8 +381,13 @@ class CommandExecutor:
 
         if target == "mute":
             self._send_key(VK_VOLUME_MUTE)
-            self.log("Звук заглушен / включен")
+            self.log("Звук заглушен / переключен")
             return True, "Звук переключен"
+
+        if target == "unmute":
+            self._send_key(VK_VOLUME_MUTE)
+            self.log("Звук включен")
+            return True, "Звук включен"
 
         return False, "Не удалось изменить громкость"
 

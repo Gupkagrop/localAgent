@@ -68,11 +68,13 @@ class AppCoordinator(QObject):
         stt_model = self.window.settings.get("stt_model", "turbo")
         self.audio_ducker = AudioDucker()
         self.decision_engine = DecisionEngine()
-        self.vision_manager = VisionAgentProcessManager()
+        vision_model = self.window.settings.get("vision_model", "xlangai/Jedi-3B-1080p")
+        self.vision_manager = VisionAgentProcessManager(model_name=vision_model)
         self.executor = CommandExecutor(
             self.audio_ducker,
             on_log=self.log,
-            vision_manager=self.vision_manager
+            vision_manager=self.vision_manager,
+            settings=self.window.settings
         )
         self.stt = SpeechToText(model_size=stt_model, device="cuda")
         self.tts = TextToSpeech(voice_name=tts_voice, speed=sapi_speed)

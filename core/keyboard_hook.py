@@ -163,7 +163,7 @@ class CopilotKeyHook:
                             self.on_click()
                     return False
 
-            # 4. Альтернативный горячий шорткат: Ctrl + Shift + J
+            # 5. Альтернативный горячий шорткат: Ctrl + Shift + J
             if vk == VK_KEY_J:
                 ctrl_down = (ctypes.windll.user32.GetKeyState(VK_CONTROL) & 0x8000) or (ctypes.windll.user32.GetKeyState(0x11) & 0x8000)
                 shift_down = (ctypes.windll.user32.GetKeyState(VK_LSHIFT) & 0x8000) or (ctypes.windll.user32.GetKeyState(0x10) & 0x8000)

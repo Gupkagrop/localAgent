@@ -42,6 +42,14 @@ class DecisionEngine:
             "вконтакте": "https://vk.com",
             "почта": "https://mail.google.com",
             "яндекс": "https://ya.ru",
+            "сообщения вк": "https://vk.com/im",
+            "сообщения в вк": "https://vk.com/im",
+            "подписки на ютубе": "https://www.youtube.com/feed/subscriptions",
+            "подписки на youtube": "https://www.youtube.com/feed/subscriptions",
+            "тренды гитхаб": "https://github.com/trending",
+            "тренды github": "https://github.com/trending",
+            "входящие в почте": "https://mail.google.com/mail/u/0/#inbox",
+            "входящие на почте": "https://mail.google.com/mail/u/0/#inbox",
         }
         if not os.path.exists(self.commands_path):
             return
@@ -240,18 +248,14 @@ class DecisionEngine:
                 "parameters": {"query": search_query}
             }
 
-        # 9. Быстрые ссылки на популярные разделы сайтов
-        subpages_map = {
-            "сообщения вк": "https://vk.com/im",
-            "сообщения в вк": "https://vk.com/im",
-            "подписки на ютубе": "https://www.youtube.com/feed/subscriptions",
-            "подписки на youtube": "https://www.youtube.com/feed/subscriptions",
-            "тренды гитхаб": "https://github.com/trending",
-            "тренды github": "https://github.com/trending",
-            "входящие в почте": "https://mail.google.com/mail/u/0/#inbox",
-            "входящие на почте": "https://mail.google.com/mail/u/0/#inbox",
-        }
-        for sub_key, sub_url in subpages_map.items():
+        # 9. Быстрые ссылки на популярные разделы сайтов и составные URL
+        # Проверяем многословные ключи из конфигурации (от самых длинных к коротким)
+        multi_word_urls = sorted(
+            [(k, v) for k, v in self.url_map.items() if " " in k],
+            key=lambda item: len(item[0]),
+            reverse=True
+        )
+        for sub_key, sub_url in multi_word_urls:
             if sub_key in q:
                 return {
                     "action": "open_url",

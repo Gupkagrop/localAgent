@@ -328,6 +328,7 @@ class MainWindow(QMainWindow):
         self.cb_stt_model.addItem("🚀 Turbo (Large-v3-Turbo: флагманская точность русской речи, 800M)", "turbo")
         self.cb_stt_model.setCurrentIndex(0)
         self.cb_stt_model.setEnabled(False)
+        self.cb_stt_model.currentIndexChanged.connect(self._on_stt_model_selected)
         stt_layout.addWidget(self.cb_stt_model)
 
         lbl_stt_tip = QLabel("Модель Large-v3-Turbo зафиксирована как основная: обеспечивает эталонную точность на GPU RTX 5050.", stt_box)

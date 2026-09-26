@@ -8,7 +8,7 @@ import re
 import time
 import ctypes
 import subprocess
-from typing import Optional, Callable
+from typing import Optional, Callable, Any
 import win32gui
 import win32con
 import win32process
