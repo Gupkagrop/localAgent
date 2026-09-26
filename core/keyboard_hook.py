@@ -18,6 +18,11 @@ VK_LSHIFT = 0xA0       # Левый Shift
 VK_APPS = 0x5D         # Клавиша Menu/Application
 VK_CONTROL = 0x11      # Виртуальная клавиша Ctrl для маскирования Win-клавиши
 VK_KEY_J = 0x4A        # Клавиша 'J' для глобального шортката Ctrl+Shift+J
+VK_ESCAPE = 0x1B       # Клавиша Escape
+VK_MASK = 0xFF         # vkFF (AutoHotkey #MenuMaskKey для нейтрализации меню Пуск)
+
+KEYEVENTF_EXTENDEDKEY = 0x0001
+KEYEVENTF_KEYUP = 0x0002
 
 WM_KEYDOWN = 0x0100
 WM_KEYUP = 0x0101
@@ -45,7 +50,7 @@ class CopilotKeyHook:
         self._press_start_time: Optional[float] = None
         self._hold_triggered = False
         self._timer: Optional[threading.Timer] = None
-        self._copilot_active = False
+        self._copilot_last_seen = 0.0
 
     def _mask_win_key(self):
         """
@@ -54,23 +59,20 @@ class CopilotKeyHook:
         чтобы Windows пометила использование модификатора без открытия меню или поиска.
         """
         try:
-            # 1. Посылаем dummy mask key vkFF
-            ctypes.windll.user32.keybd_event(0xFF, 0, 0, 0)
-            ctypes.windll.user32.keybd_event(0xFF, 0, KEYEVENTF_KEYUP, 0)
-            # 2. Принудительно сбрасываем состояние Win и Shift
-            ctypes.windll.user32.keybd_event(VK_LWIN, 0, KEYEVENTF_KEYUP, 0)
+            # 1. Посылаем dummy mask key vkFF (нажатие и отпускание)
+            ctypes.windll.user32.keybd_event(VK_MASK, 0, 0, 0)
+            ctypes.windll.user32.keybd_event(VK_MASK, 0, KEYEVENTF_KEYUP, 0)
+            # 2. Принудительно отпускаем Shift и Win, предотвращая вызов SearchHost
             ctypes.windll.user32.keybd_event(VK_LSHIFT, 0, KEYEVENTF_KEYUP, 0)
-            # 3. Закрываем всплывающее окно поиска Windows при случайном вызове
-            self.dismiss_search_window()
+            ctypes.windll.user32.keybd_event(VK_LWIN, 0, KEYEVENTF_KEYUP, 0)
         except Exception:
             pass
 
     def dismiss_search_window(self):
         """Закрывает окно поиска Windows SearchHost при попытке всплытия."""
         try:
-            # Отправка ESCAPE мгновенно закрывает Windows Search flyout
-            ctypes.windll.user32.keybd_event(0x1B, 0, 0, 0)
-            ctypes.windll.user32.keybd_event(0x1B, 0, KEYEVENTF_KEYUP, 0)
+            ctypes.windll.user32.keybd_event(VK_ESCAPE, 0, 0, 0)
+            ctypes.windll.user32.keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, 0)
         except Exception:
             pass
 
@@ -87,21 +89,19 @@ class CopilotKeyHook:
             if msg in (WM_KEYDOWN, WM_SYSKEYDOWN) and self.on_any_key:
                 self.on_any_key(vk, hex(vk))
 
-            # Подавление системного отпускания Win и Shift после последовательности Copilot
-            if self._copilot_active:
+            now = time.time()
+
+            # 1. Подавление физического отпускания LWin/LShift СТРОГО в течение 250 мс
+            # после срабатывания комбинации Copilot, чтобы Windows не открывала поиск.
+            # Обычное нажатие и отпускание физической клавиши Windows НИКОГДА не блокируется!
+            if (now - self._copilot_last_seen) < 0.25:
                 if vk in (VK_LWIN, VK_RWIN, VK_LSHIFT, 0x10):
                     if msg in (WM_KEYUP, WM_SYSKEYUP):
-                        win_down = (ctypes.windll.user32.GetKeyState(VK_LWIN) & 0x8000) or (ctypes.windll.user32.GetKeyState(VK_RWIN) & 0x8000)
-                        shift_down = (ctypes.windll.user32.GetKeyState(VK_LSHIFT) & 0x8000) or (ctypes.windll.user32.GetKeyState(0x10) & 0x8000)
-                        if not win_down and not shift_down:
-                            self._copilot_active = False
-                        self._mask_win_key()
                         return False
-                    return False
 
-            # 1. Аппаратный код клавиши Copilot (VK_F23 = 0x86 или 0x8E)
+            # 2. Аппаратный код клавиши Copilot (VK_F23 = 0x86 или 0x8E)
             if vk in (VK_F23, VK_F23_ALT):
-                self._copilot_active = True
+                self._copilot_last_seen = now
                 self._mask_win_key()
 
                 if msg in (WM_KEYDOWN, WM_SYSKEYDOWN):
@@ -140,21 +140,23 @@ class CopilotKeyHook:
 
                     return False
 
-            # 2. Обработка клавиши VK_APPS (Menu), если она зажата вместе с Win
+            # 3. Обработка клавиши VK_APPS (Menu), если она зажата вместе с Win
             if vk == VK_APPS:
                 win_down = (ctypes.windll.user32.GetKeyState(VK_LWIN) & 0x8000) or (ctypes.windll.user32.GetKeyState(VK_RWIN) & 0x8000)
                 if win_down:
+                    self._copilot_last_seen = now
                     self._mask_win_key()
                     if msg in (WM_KEYDOWN, WM_SYSKEYDOWN):
                         if self.on_click:
                             self.on_click()
                     return False
 
-            # 3. Обработка связки Win + Shift + C
+            # 4. Обработка связки Win + Shift + C
             if vk == 0x43:  # 'C'
                 win_down = (ctypes.windll.user32.GetKeyState(VK_LWIN) & 0x8000) or (ctypes.windll.user32.GetKeyState(VK_RWIN) & 0x8000)
                 shift_down = (ctypes.windll.user32.GetKeyState(VK_LSHIFT) & 0x8000) or (ctypes.windll.user32.GetKeyState(0x10) & 0x8000)
                 if win_down and shift_down:
+                    self._copilot_last_seen = now
                     self._mask_win_key()
                     if msg in (WM_KEYDOWN, WM_SYSKEYDOWN):
                         if self.on_click:

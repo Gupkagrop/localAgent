@@ -143,7 +143,7 @@ class MainWindow(QMainWindow):
         grid_cards.addWidget(self.card_mic, 0, 0)
 
         # Карточка 2: Клавиша Copilot
-        self.card_key = self._create_status_card("⌨ Кнопка Copilot", "Хук активен (0x8E)", "#34D399")
+        self.card_key = self._create_status_card("⌨ Кнопка Copilot", "Хук активен (F23)", "#34D399")
         grid_cards.addWidget(self.card_key, 0, 1)
 
         # Карточка 3: Распознавание речи STT

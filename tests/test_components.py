@@ -120,6 +120,29 @@ class TestCoreModules(unittest.TestCase):
         self.assertEqual(VK_F23, 0x86)
         self.assertEqual(VK_F23_ALT, 0x8E)
 
+    def test_keyboard_hook_windows_key_not_blocked(self):
+        hook = CopilotKeyHook()
+        class FakeData:
+            vkCode = 0x5B  # VK_LWIN
+        # WM_KEYDOWN for Windows key must ALWAYS return True (never blocked)
+        res = hook._win32_event_filter(0x0100, FakeData())
+        self.assertTrue(res)
+        # WM_KEYUP for Windows key must also return True
+        res_up = hook._win32_event_filter(0x0101, FakeData())
+        self.assertTrue(res_up)
+
+    def test_keyboard_hook_copilot_blocked(self):
+        clicked = []
+        hook = CopilotKeyHook(on_click=lambda: clicked.append(True))
+        class FakeDataF23:
+            vkCode = 0x86  # VK_F23
+        # WM_KEYDOWN for Copilot key must return False (intercepted and blocked)
+        res_down = hook._win32_event_filter(0x0100, FakeDataF23())
+        self.assertFalse(res_down)
+        # WM_KEYUP for Copilot key must return False
+        res_up = hook._win32_event_filter(0x0101, FakeDataF23())
+        self.assertFalse(res_up)
+
     def test_executor_general_answer(self):
         executor = CommandExecutor()
         cmd = {"action": "general_answer", "target": "answer", "parameters": {"text": "Тестовый ответ"}}
