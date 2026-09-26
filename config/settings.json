@@ -12,6 +12,6 @@
   "tts_voice": "ru_RU-irina-medium",
   "tts_speed": 1.0,
   "audio_device_index": 0,
-  "stt_model": "small",
+  "stt_model": "turbo",
   "confirm_dangerous_actions": true
 }

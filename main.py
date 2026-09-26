@@ -63,10 +63,11 @@ class AppCoordinator(QObject):
         tts_speed = float(self.window.settings.get("tts_speed", 1.0))
         sapi_speed = int(max(-10, min(10, (tts_speed - 1.0) * 10)))
 
+        stt_model = self.window.settings.get("stt_model", "turbo")
         self.audio_ducker = AudioDucker()
         self.decision_engine = DecisionEngine()
         self.executor = CommandExecutor(self.audio_ducker, on_log=self.log)
-        self.stt = SpeechToText(model_size="small", device="cuda")
+        self.stt = SpeechToText(model_size=stt_model, device="cuda")
         self.tts = TextToSpeech(voice_name=tts_voice, speed=sapi_speed)
         self.listener = AudioListener(device_index=saved_device, on_vu_meter=self.vu_meter_signal.emit)
 
@@ -114,7 +115,7 @@ class AppCoordinator(QObject):
         self.log("==================================================")
         self.log("🚀 Antigravity Voice запущен и готов к работе!")
         self.log("• Микрофон: активен и готов к записи речи")
-        self.log(f"• Распознавание речи: Faster-Whisper Small на {stt_mode}")
+        self.log(f"• Распознавание речи: Faster-Whisper {self.stt.model_size.capitalize()} на {stt_mode}")
         self.log(f"• Модуль ИИ: {ai_mode}")
         self.log("• Клавиша Copilot: перехватчик активен (VK_F23 = 0x8E)")
         self.log("• Интеграция: Antigravity IDE (GUI) + Antigravity CLI (agy)")
