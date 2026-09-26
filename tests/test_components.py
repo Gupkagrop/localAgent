@@ -343,45 +343,6 @@ class TestCoreModules(unittest.TestCase):
             self.assertIn("youtube.com/results?search_query=", fallback_url)
             self.assertIn("sp=CAI", fallback_url)
 
-    def test_chrome_cdp_controller_known_pattern(self):
-        import urllib.parse
-        from core.chrome_cdp import ChromeCDPController
-        cdp = ChromeCDPController()
-        ok, msg, url = cdp.execute_site_search("кинопоиск", "Начало")
-        self.assertTrue(ok)
-        self.assertIn("kinopoisk.ru", url)
-        self.assertIn("Начало", urllib.parse.unquote(url))
-
-
-    def test_chrome_cdp_controller_is_available_mocked(self):
-        from core.chrome_cdp import ChromeCDPController
-        cdp = ChromeCDPController()
-        import io
-        import unittest.mock as mock
-        class MockResp:
-            status = 200
-            def __enter__(self):
-                return self
-            def __exit__(self, *args):
-                pass
-        with mock.patch("urllib.request.urlopen", return_value=MockResp()):
-            self.assertTrue(cdp.is_cdp_available())
-
-    def test_executor_chrome_cdp_execution(self):
-        executor = CommandExecutor()
-        cmd = {
-            "action": "chrome_cdp",
-            "target": "search",
-            "parameters": {"site": "авито", "query": "велосипед", "click_first": False}
-        }
-        import unittest.mock as mock
-        with mock.patch("webbrowser.open") as mock_open:
-            ok, msg = executor.execute(cmd)
-            self.assertTrue(ok)
-            mock_open.assert_called_once()
-            args, _ = mock_open.call_args
-            self.assertIn("avito.ru", args[0])
-
     def test_desktop_app_controller_launch_or_focus_existing(self):
         from core.app_controller import DesktopAppController
         ctrl = DesktopAppController()

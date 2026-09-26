@@ -16,7 +16,6 @@ import win32con
 import win32clipboard
 
 from core.audio_ducking import AudioDucker
-from core.chrome_cdp import ChromeCDPController
 from core.app_controller import DesktopAppController
 
 # Виртуальные коды мультимедиа-клавиш Windows
@@ -40,7 +39,6 @@ class CommandExecutor:
     ):
         self.audio_ducker = audio_ducker or AudioDucker()
         self.on_log = on_log
-        self.chrome_cdp = ChromeCDPController(on_log=self.log)
         self.app_controller = DesktopAppController(on_log=self.log)
         self.commands_config = self._load_commands_config()
         antigravity_cfg = self.commands_config.get("antigravity", {})
@@ -148,20 +146,6 @@ class CommandExecutor:
             except Exception as e:
                 return False, f"Ошибка открытия ссылки: {e}"
 
-        # 7. Универсальный поиск на сайтах через Chrome CDP / поисковые шаблоны
-        if action == "chrome_cdp":
-            site = params.get("site", "")
-            query = params.get("query", "")
-            click_first = params.get("click_first", False)
-            ok, msg, target_url = self.chrome_cdp.execute_site_search(site, query, click_first=click_first)
-            if target_url:
-                try:
-                    webbrowser.open(target_url)
-                    self.log(f"Открыта ссылка в браузере: {target_url}")
-                    return True, msg
-                except Exception as e:
-                    return False, f"Ошибка открытия ссылки: {e}"
-            return ok, msg
 
         # 8. Управление окнами приложений (закрыть, свернуть, развернуть, рабочий стол)
         if action == "window_control":
