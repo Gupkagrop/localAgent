@@ -142,7 +142,7 @@ class CopilotKeyHook:
 
             # 3. Обработка клавиши VK_APPS (Menu), если она зажата вместе с Win
             if vk == VK_APPS:
-                win_down = (ctypes.windll.user32.GetKeyState(VK_LWIN) & 0x8000) or (ctypes.windll.user32.GetKeyState(VK_RWIN) & 0x8000)
+                win_down = (ctypes.windll.user32.GetAsyncKeyState(VK_LWIN) & 0x8000) or (ctypes.windll.user32.GetAsyncKeyState(VK_RWIN) & 0x8000)
                 if win_down:
                     self._copilot_last_seen = now
                     self._mask_win_key()
@@ -153,8 +153,8 @@ class CopilotKeyHook:
 
             # 4. Обработка связки Win + Shift + C
             if vk == 0x43:  # 'C'
-                win_down = (ctypes.windll.user32.GetKeyState(VK_LWIN) & 0x8000) or (ctypes.windll.user32.GetKeyState(VK_RWIN) & 0x8000)
-                shift_down = (ctypes.windll.user32.GetKeyState(VK_LSHIFT) & 0x8000) or (ctypes.windll.user32.GetKeyState(0x10) & 0x8000)
+                win_down = (ctypes.windll.user32.GetAsyncKeyState(VK_LWIN) & 0x8000) or (ctypes.windll.user32.GetAsyncKeyState(VK_RWIN) & 0x8000)
+                shift_down = (ctypes.windll.user32.GetAsyncKeyState(VK_LSHIFT) & 0x8000) or (ctypes.windll.user32.GetAsyncKeyState(0x10) & 0x8000)
                 if win_down and shift_down:
                     self._copilot_last_seen = now
                     self._mask_win_key()
@@ -165,8 +165,8 @@ class CopilotKeyHook:
 
             # 5. Альтернативный горячий шорткат: Ctrl + Shift + J
             if vk == VK_KEY_J:
-                ctrl_down = (ctypes.windll.user32.GetKeyState(VK_CONTROL) & 0x8000) or (ctypes.windll.user32.GetKeyState(0x11) & 0x8000)
-                shift_down = (ctypes.windll.user32.GetKeyState(VK_LSHIFT) & 0x8000) or (ctypes.windll.user32.GetKeyState(0x10) & 0x8000)
+                ctrl_down = (ctypes.windll.user32.GetAsyncKeyState(VK_CONTROL) & 0x8000) or (ctypes.windll.user32.GetAsyncKeyState(0x11) & 0x8000)
+                shift_down = (ctypes.windll.user32.GetAsyncKeyState(VK_LSHIFT) & 0x8000) or (ctypes.windll.user32.GetAsyncKeyState(0x10) & 0x8000)
                 if ctrl_down and shift_down:
                     if msg in (WM_KEYDOWN, WM_SYSKEYDOWN):
                         if self.on_click:

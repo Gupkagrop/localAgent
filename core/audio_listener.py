@@ -125,6 +125,8 @@ class AudioListener:
         except Exception as e:
             print(f"[AudioListener Error] {e}")
         finally:
+            self._is_running = False
+            self._record_done_event.set()
             if self.on_vu_meter:
                 self.on_vu_meter(0.0)
 

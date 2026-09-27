@@ -304,8 +304,19 @@ class CommandExecutor:
                     self._send_key_combo(VK_CONTROL, VK_N)
                     time.sleep(0.2)
 
-                # Копируем промпт в буфер обмена
-                win32clipboard.OpenClipboard()
+                # Копируем промпт в буфер обмена с повторными попытками
+                clipboard_opened = False
+                for _ in range(5):
+                    try:
+                        win32clipboard.OpenClipboard()
+                        clipboard_opened = True
+                        break
+                    except Exception:
+                        time.sleep(0.05)
+
+                if not clipboard_opened:
+                    return False, "Буфер обмена Windows временно заблокирован другим приложением"
+
                 try:
                     win32clipboard.EmptyClipboard()
                     win32clipboard.SetClipboardText(prompt_text, win32clipboard.CF_UNICODETEXT)

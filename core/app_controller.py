@@ -307,8 +307,19 @@ class DesktopAppController:
             self._send_key_combo(VK_CONTROL, VK_F)
             time.sleep(0.15)
 
-        # Копируем текст в буфер обмена Windows
-        win32clipboard.OpenClipboard()
+        # Копируем текст в буфер обмена Windows с повторными попытками
+        clipboard_opened = False
+        for _ in range(5):
+            try:
+                win32clipboard.OpenClipboard()
+                clipboard_opened = True
+                break
+            except Exception:
+                time.sleep(0.05)
+
+        if not clipboard_opened:
+            return False, "Буфер обмена Windows временно заблокирован другим приложением"
+
         try:
             win32clipboard.EmptyClipboard()
             win32clipboard.SetClipboardText(text, win32clipboard.CF_UNICODETEXT)

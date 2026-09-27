@@ -423,9 +423,20 @@ class ScreenController:
         if len(text) > 20:
             import win32clipboard
             import win32con
+            def _safe_open_clipboard(retries: int = 5, delay: float = 0.05) -> bool:
+                for _ in range(retries):
+                    try:
+                        win32clipboard.OpenClipboard()
+                        return True
+                    except Exception:
+                        time.sleep(delay)
+                return False
+
             prev_clipboard: Optional[str] = None
             try:
-                win32clipboard.OpenClipboard()
+                if not _safe_open_clipboard():
+                    raise RuntimeError("Буфер обмена Windows заблокирован")
+
                 try:
                     if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
                         prev_clipboard = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
@@ -439,8 +450,7 @@ class ScreenController:
                 time.sleep(0.08)
 
                 # Восстановление буфера пользователя
-                if prev_clipboard is not None:
-                    win32clipboard.OpenClipboard()
+                if prev_clipboard is not None and _safe_open_clipboard():
                     try:
                         win32clipboard.EmptyClipboard()
                         win32clipboard.SetClipboardText(prev_clipboard, win32con.CF_UNICODETEXT)
