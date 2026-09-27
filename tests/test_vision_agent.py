@@ -133,5 +133,20 @@ class TestProcessManager(unittest.TestCase):
         self.assertEqual(mgr.fallback_model, "custom/fallback")
 
 
+class TestTorchIsolation(unittest.TestCase):
+    """Тестирование архитектурной изоляции PyTorch от основного процесса."""
+
+    def test_torch_not_in_sys_modules(self) -> None:
+        """PyTorch не должен импортироваться в адресное пространство основного процесса."""
+        import sys
+        # Основной процесс UI и Fast-Path не должен зависеть от тяжелого Torch runtime
+        self.assertNotIn(
+            "torch",
+            sys.modules,
+            "Критическая ошибка архитектуры: PyTorch импортирован в основной процесс!"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
+

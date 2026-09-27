@@ -54,10 +54,16 @@ class FloatingPill(QWidget):
             }
         """)
 
+        self._mode = "idle"
+
         # Таймер скрытия
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
-        self._hide_timer.timeout.connect(self.hide)
+        self._hide_timer.timeout.connect(self._on_hide_timeout)
+
+    def _on_hide_timeout(self) -> None:
+        self._mode = "idle"
+        self.hide()
 
     def _reposition(self):
         """Размещает пилюлю по центру внизу экрана, где находится курсор мыши."""
@@ -68,8 +74,26 @@ class FloatingPill(QWidget):
             y = geom.y() + geom.height() - 95  # 95px выше панели задач
             self.move(x, y)
 
+    def update_vu(self, level: float) -> None:
+        """Обновляет пульсацию точки активности в зависимости от уровня громкости голоса."""
+        if not self.isVisible() or self._mode != "listening":
+            return
+        lvl = max(0.0, min(1.0, float(level)))
+        if lvl > 0.6:
+            color = "#93C5FD"
+            size = 16
+        elif lvl > 0.2:
+            color = "#60A5FA"
+            size = 15
+        else:
+            color = "#3B82F6"
+            size = 14
+        self.dot.setFont(QFont("Segoe UI", size, QFont.Weight.Bold))
+        self.dot.setStyleSheet(f"color: {color};")
+
     def show_listening(self):
         """Переводит индикатор в режим прослушивания."""
+        self._mode = "listening"
         self._hide_timer.stop()
         self.dot.setStyleSheet("color: #3B82F6;")  # Синий пульс
         self.label.setText("Слушаю...")
@@ -91,6 +115,7 @@ class FloatingPill(QWidget):
 
     def show_step(self, step: int, max_steps: int, action_text: str) -> None:
         """Показывает текущий промежуточный шаг выполнения Vision-агента."""
+        self._mode = "step"
         self._hide_timer.stop()
         self.dot.setStyleSheet("color: #38BDF8;")  # Неоновый голубой (активное действие агента)
         display = f"[{step}/{max_steps}] {action_text.strip()}"
@@ -104,6 +129,7 @@ class FloatingPill(QWidget):
 
     def show_executing(self, action_name: str = "Выполняю..."):
         """Показывает статус выполнения действия."""
+        self._mode = "executing"
         self.dot.setStyleSheet("color: #10B981;")  # Зеленый свет
         self.label.setText(action_name)
         self.adjustSize()
@@ -114,6 +140,7 @@ class FloatingPill(QWidget):
 
     def show_error(self, message: str = "Не удалось распознать"):
         """Показывает статус ошибки."""
+        self._mode = "error"
         self.dot.setStyleSheet("color: #EF4444;")  # Красный свет
         self.label.setText(message)
         self.adjustSize()
@@ -150,9 +177,13 @@ class ClickIndicatorOverlay(QWidget):
         self._timer.timeout.connect(self._animate_step)
 
     def show_click(self, screen_x: int, screen_y: int) -> None:
-        """Показывает анимацию клика в координатах экрана."""
+        """Показывает анимацию клика в координатах экрана с учетом High DPI масштабирования."""
+        screen = QGuiApplication.screenAt(QPoint(int(screen_x), int(screen_y))) or QGuiApplication.primaryScreen()
+        dpr = screen.devicePixelRatio() if screen else 1.0
+        logical_x = screen_x / dpr
+        logical_y = screen_y / dpr
         half = self.size_px // 2
-        self.move(int(screen_x - half), int(screen_y - half))
+        self.move(int(logical_x - half), int(logical_y - half))
         self._current_step = 0
         self.show()
         self.raise_()

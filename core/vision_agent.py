@@ -44,7 +44,7 @@ class VisionAction:
     """Структурированное действие модели."""
     thought: str = ""
     action_type: str = "wait"
-    coordinate: Optional[Tuple[int, int]] = None  # [y, x] в диапазоне 0..1000
+    coordinate: Optional[Tuple[int, int]] = None  # [x, y] в диапазоне 0..1000
     text: str = ""
     press_enter: bool = False
     key: str = ""
@@ -167,6 +167,7 @@ def _worker_process_loop(
     status_queue: mp.Queue,
     model_name: str,
     stop_event: Any,
+    cancel_event: Any = None,
     fallback_model: str = "Qwen/Qwen2.5-VL-3B-Instruct"
 ) -> None:
     """
@@ -243,6 +244,9 @@ def _worker_process_loop(
             if task.get("type") != "execute":
                 continue
 
+            if cancel_event is not None:
+                cancel_event.clear()
+
             prompt = task.get("prompt", "")
             max_steps = task.get("max_steps", 8)
             history: List[str] = []
@@ -252,10 +256,18 @@ def _worker_process_loop(
 
             task_success = False
             final_message = ""
+            was_interrupted = False
 
             for step in range(1, max_steps + 1):
                 if stop_event.is_set():
                     final_message = "Задача остановлена"
+                    was_interrupted = True
+                    break
+
+                if cancel_event is not None and cancel_event.is_set():
+                    status_queue.put({"type": "interrupted", "reason": "Задача отменена пользователем"})
+                    final_message = "Задача отменена пользователем"
+                    was_interrupted = True
                     break
 
                 # 1. Проверка прерывания
@@ -263,6 +275,7 @@ def _worker_process_loop(
                 if interrupted:
                     status_queue.put({"type": "interrupted", "reason": reason})
                     final_message = reason
+                    was_interrupted = True
                     break
 
                 # 2. Захват экрана
@@ -400,11 +413,12 @@ def _worker_process_loop(
                 # Короткая пауза для отрисовки интерфейса Windows
                 time.sleep(0.3)
 
-            status_queue.put({
-                "type": "task_completed",
-                "success": task_success,
-                "message": final_message or "Достигнут лимит шагов"
-            })
+            if not was_interrupted:
+                status_queue.put({
+                    "type": "task_completed",
+                    "success": task_success,
+                    "message": final_message or "Достигнут лимит шагов"
+                })
 
     finally:
         # Гарантированная выгрузка модели и освобождение VRAM при остановке или сбое
@@ -430,6 +444,7 @@ class VisionAgentProcessManager:
         self._task_queue: Optional[mp.Queue] = None
         self._status_queue: Optional[mp.Queue] = None
         self._stop_event: Optional[Any] = None
+        self._cancel_event: Optional[Any] = None
         self._is_ready: bool = False
         self._is_busy: bool = False
 
@@ -453,12 +468,13 @@ class VisionAgentProcessManager:
         self._task_queue = mp.Queue()
         self._status_queue = mp.Queue()
         self._stop_event = mp.Event()
+        self._cancel_event = mp.Event()
         self._is_ready = False
         self._is_busy = False
 
         self._process = mp.Process(
             target=_worker_process_loop,
-            args=(self._task_queue, self._status_queue, self.model_name, self._stop_event, self.fallback_model),
+            args=(self._task_queue, self._status_queue, self.model_name, self._stop_event, self._cancel_event, self.fallback_model),
             daemon=True
         )
         self._process.start()
@@ -466,17 +482,20 @@ class VisionAgentProcessManager:
 
     def stop(self) -> None:
         """Полная остановка процесса и гарантированное освобождение VRAM."""
+        if self._cancel_event is not None:
+            self._cancel_event.set()
+
         if self._stop_event is not None:
             self._stop_event.set()
 
         if self._task_queue is not None:
             try:
-                self._task_queue.put({"type": "stop"})
+                self._task_queue.put({"type": "stop"}, timeout=0.5)
             except Exception:
                 pass
 
         if self._process is not None and self._process.is_alive():
-            self._process.join(timeout=2.0)
+            self._process.join(timeout=4.0)
             if self._process.is_alive():
                 self._process.terminate()
 
@@ -484,14 +503,15 @@ class VisionAgentProcessManager:
         self._task_queue = None
         self._status_queue = None
         self._stop_event = None
+        self._cancel_event = None
         self._is_ready = False
         self._is_busy = False
 
     def abort_task(self) -> None:
-        """Экстренно прерывает выполнение текущей задачи агента."""
+        """Экстренно прерывает выполнение текущей задачи агента без остановки рабочего процесса."""
         self._is_busy = False
-        if self._stop_event is not None:
-            self._stop_event.set()
+        if self._cancel_event is not None:
+            self._cancel_event.set()
 
     def poll_status(self) -> List[Dict[str, Any]]:
         """Опрашивает очередь обновлений статуса от рабочего процесса."""

@@ -214,8 +214,12 @@ QCheckBox::indicator:hover {
 
 QCheckBox::indicator:checked {
     background-color: #2563EB;
-    border-color: #3B82F6;
-    image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>');
+    border: 1px solid #3B82F6;
+}
+
+QCheckBox::indicator:checked:hover {
+    background-color: #1D4ED8;
+    border-color: #60A5FA;
 }
 
 QComboBox {

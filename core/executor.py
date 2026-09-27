@@ -7,6 +7,7 @@ import os
 import re
 import json
 import time
+import threading
 import ctypes
 import subprocess
 import webbrowser
@@ -26,6 +27,7 @@ VK_VOLUME_MUTE = 0xAD
 
 # Коды клавиш модификаторов
 VK_CONTROL = 0x11
+VK_C = 0x43
 VK_V = 0x56
 VK_N = 0x4E
 VK_RETURN = 0x0D
@@ -107,7 +109,7 @@ class CommandExecutor:
 
         # 2. Antigravity CLI
         if action == "antigravity_cli":
-            return self._handle_antigravity_cli(params.get("prompt", ""))
+            return self._handle_antigravity_cli(params.get("prompt", ""), params=params)
 
         # 3. Громкость
         if action == "set_volume":
@@ -148,6 +150,14 @@ class CommandExecutor:
                 resolved_url = self._resolve_youtube_video(query, sort_by_date=sort_by_date)
                 if resolved_url:
                     target_url = resolved_url
+
+            if "://" not in target_url:
+                target_url = "https://" + target_url
+
+            from urllib.parse import urlparse
+            parsed = urlparse(target_url)
+            if parsed.scheme not in ("http", "https"):
+                return False, f"Недопустимая схема URL: {parsed.scheme}"
 
             try:
                 webbrowser.open(target_url)
@@ -196,18 +206,20 @@ class CommandExecutor:
 
         if action == "system_action":
             confirmed = params.get("confirmed", False)
-            if params.get("dangerous") and not confirmed:
+            if (target in ("shutdown", "restart") or params.get("dangerous")) and not confirmed:
                 return False, "CONFIRM_REQUIRED"
+
+            shutdown_bin = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "shutdown.exe")
             if target == "shutdown":
                 try:
-                    subprocess.Popen(["shutdown", "/s", "/t", "15"])
+                    subprocess.Popen([shutdown_bin, "/s", "/t", "15"], shell=False)
                     self.log("Инициировано выключение компьютера через 15 секунд.")
                     return True, "Выключение компьютера через 15 секунд"
                 except Exception as e:
                     return False, f"Ошибка выключения: {e}"
             if target == "restart":
                 try:
-                    subprocess.Popen(["shutdown", "/r", "/t", "15"])
+                    subprocess.Popen([shutdown_bin, "/r", "/t", "15"], shell=False)
                     self.log("Инициирована перезагрузка компьютера через 15 секунд.")
                     return True, "Перезагрузка компьютера через 15 секунд"
                 except Exception as e:
@@ -245,9 +257,28 @@ class CommandExecutor:
             self.log(f"Предупреждение: Vision-агент не подключен, задача: «{prompt}»")
             return False, "Vision-агент не подключен"
 
-        # Автоматическая фокусировка браузера для веб-задач при включенной настройке
-        if self.settings.get("vision_auto_focus_browser", True):
-            prompt_lower = prompt.lower()
+        # Предварительная навигация на целевые веб-сервисы и маркетплейсы
+        prompt_lower = prompt.lower()
+        pre_nav_targets = [
+            (r"\bяндекс\s*маркет", "https://market.yandex.ru"),
+            (r"\b(авито|avito)", "https://www.avito.ru"),
+            (r"\b(озон|ozon)", "https://www.ozon.ru"),
+            (r"\b(вайлдберриз|wildberries|вб)\b", "https://www.wildberries.ru"),
+        ]
+        opened_pre_nav = False
+        for pattern, target_url in pre_nav_targets:
+            if re.search(pattern, prompt_lower, re.IGNORECASE):
+                try:
+                    self.log(f"Предварительное открытие веб-сервиса ({target_url}) для Vision-агента...")
+                    webbrowser.open(target_url)
+                    time.sleep(0.45)
+                    opened_pre_nav = True
+                except Exception as e:
+                    self.log(f"Предупреждение при переходе по ссылке {target_url}: {e}")
+                break
+
+        # Автоматическая фокусировка браузера для других веб-задач при включенной настройке
+        if not opened_pre_nav and self.settings.get("vision_auto_focus_browser", True):
             web_keywords = ["ютуб", "youtube", "авито", "avito", "озон", "ozon", "яндекс", "гугл", "google", "вк", "vk", "браузер", "chrome", "сайт", "видео"]
             if any(w in prompt_lower for w in web_keywords):
                 try:
@@ -317,7 +348,10 @@ class CommandExecutor:
                 if not clipboard_opened:
                     return False, "Буфер обмена Windows временно заблокирован другим приложением"
 
+                prev_clipboard = None
                 try:
+                    if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
+                        prev_clipboard = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
                     win32clipboard.EmptyClipboard()
                     win32clipboard.SetClipboardText(prompt_text, win32con.CF_UNICODETEXT)
                 finally:
@@ -327,6 +361,23 @@ class CommandExecutor:
                 self._send_key_combo(VK_CONTROL, VK_V)
                 time.sleep(0.08)
                 self._send_key(VK_RETURN)
+
+                # Восстанавливаем буфер обмена пользователя
+                if prev_clipboard is not None:
+                    def restore_clipboard():
+                        time.sleep(0.08)
+                        for _ in range(5):
+                            try:
+                                win32clipboard.OpenClipboard()
+                                win32clipboard.EmptyClipboard()
+                                win32clipboard.SetClipboardText(prev_clipboard, win32con.CF_UNICODETEXT)
+                                win32clipboard.CloseClipboard()
+                                break
+                            except Exception:
+                                time.sleep(0.04)
+
+                    threading.Thread(target=restore_clipboard, daemon=True).start()
+
                 self.log(f"Промпт отправлен в Antigravity GUI: {prompt_text[:40]}...")
                 return True, "Промпт отправлен в Antigravity"
 
@@ -340,29 +391,51 @@ class CommandExecutor:
         except Exception as e:
             return False, f"Ошибка управления окном Antigravity: {e}"
 
-    def _handle_antigravity_cli(self, prompt: str) -> tuple[bool, str]:
+    def _handle_antigravity_cli(self, prompt: str, params: Optional[dict] = None) -> tuple[bool, str]:
         """Запускает Antigravity CLI в Windows Terminal."""
+        import base64
         cli_exe = self.cli_executable
-        try:
-            # Команда запуска Windows Terminal с вкладкой PowerShell и agy
-            if prompt:
-                # Экранируем кавычки для powershell
-                escaped_prompt = prompt.replace('"', '`"')
-                cmd = f'wt.exe -w 0 nt powershell -NoExit -Command "{cli_exe} -p \\"{escaped_prompt}\\""'
-            else:
-                cmd = f'wt.exe -w 0 nt powershell -NoExit -Command "{cli_exe}"'
 
-            subprocess.Popen(cmd, shell=True)
+        if params and params.get("use_clipboard"):
+            try:
+                # Эмулируем Ctrl+C для копирования выделенного текста/ошибки
+                ctypes.windll.user32.keybd_event(VK_CONTROL, 0, 0, 0)
+                ctypes.windll.user32.keybd_event(VK_C, 0, 0, 0)
+                time.sleep(0.05)
+                ctypes.windll.user32.keybd_event(VK_C, 0, KEYEVENTF_KEYUP, 0)
+                ctypes.windll.user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+                time.sleep(0.1)
+
+                win32clipboard.OpenClipboard()
+                clip_text = ""
+                if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
+                    clip_text = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+                win32clipboard.CloseClipboard()
+
+                if clip_text and clip_text.strip():
+                    prompt = f"{prompt}\n\n{clip_text.strip()}"
+            except Exception as e:
+                self.log(f"Предупреждение при чтении буфера обмена: {e}")
+
+        # Формируем Base64-команду PowerShell для исключения shell injection
+        if prompt:
+            ps_script = f"& '{cli_exe}' -p {json.dumps(prompt)}"
+        else:
+            ps_script = f"& '{cli_exe}'"
+
+        encoded = base64.b64encode(ps_script.encode("utf-16le")).decode("ascii")
+
+        try:
+            # Запуск через Windows Terminal с флагом -EncodedCommand без shell=True
+            args = ["wt.exe", "-w", "0", "nt", "powershell.exe", "-NoExit", "-EncodedCommand", encoded]
+            subprocess.Popen(args, shell=False)
             self.log(f"Запущен Antigravity CLI с задачей: {prompt or 'интерактивный режим'}")
             return True, "Antigravity CLI запущен в терминале"
         except Exception:
             # Fallback если wt.exe недоступен
             try:
-                if prompt:
-                    cmd = f'start powershell -NoExit -Command "{cli_exe} -p \\"{prompt}\\""'
-                else:
-                    cmd = f'start powershell -NoExit -Command "{cli_exe}"'
-                subprocess.Popen(cmd, shell=True)
+                args = ["powershell.exe", "-NoExit", "-EncodedCommand", encoded]
+                subprocess.Popen(args, shell=False)
                 return True, "Antigravity CLI запущен в PowerShell"
             except Exception as e:
                 return False, f"Ошибка запуска CLI: {e}"
@@ -430,7 +503,7 @@ class CommandExecutor:
         if not clean_query:
             return "https://www.youtube.com"
 
-        encoded = urllib.parse.quote(clean_query)
+        encoded = urllib.parse.quote_plus(clean_query)
         search_url = f"https://www.youtube.com/results?search_query={encoded}"
         if sort_by_date:
             search_url += "&sp=CAI%253D"
@@ -444,7 +517,7 @@ class CommandExecutor:
         )
         try:
             with urllib.request.urlopen(req, timeout=3.5) as resp:
-                data = resp.read().decode("utf-8", errors="ignore")
+                data = resp.read(262144).decode("utf-8", errors="ignore")
                 ids = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"', data)
                 if ids:
                     unique_ids = list(dict.fromkeys(ids))

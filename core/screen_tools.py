@@ -312,8 +312,8 @@ class ScreenController:
         safe_y = max(0, min(1000, norm_y))
 
         left, top, width, height = self._current_monitor
-        screen_x = left + int((safe_x / 1000.0) * width)
-        screen_y = top + int((safe_y / 1000.0) * height)
+        screen_x = left + max(0, min(width - 1, int((safe_x / 1000.0) * width)))
+        screen_y = top + max(0, min(height - 1, int((safe_y / 1000.0) * height)))
         return screen_x, screen_y
 
     def move_mouse(self, x: int, y: int) -> None:

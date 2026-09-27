@@ -45,6 +45,7 @@ class AppCoordinator(QObject):
     confirm_action_signal = pyqtSignal(dict, str)
     card_status_signal = pyqtSignal(str, str, str)
     check_all_done_signal = pyqtSignal(bool, str)
+    tray_state_signal = pyqtSignal(str)
 
     def __init__(self, is_minimized: bool = False):
         super().__init__()
@@ -84,8 +85,9 @@ class AppCoordinator(QObject):
         self._is_processing_voice = False
         self._voice_lock = threading.Lock()
 
-        # Фоновый запуск Vision-агента в режиме Always-Warm
-        self.vision_manager.start()
+        # Фоновый запуск Vision-агента в режиме Always-Warm при наличии модели
+        if self.decision_engine.is_llm_available():
+            self.vision_manager.start()
 
         # Таймер опроса очереди событий Vision-агента (каждые 120 мс)
         self._vision_timer = QTimer(self)
@@ -115,6 +117,7 @@ class AppCoordinator(QObject):
         self._apply_activation_mode()
 
         # 7. Отображение окна
+        self.tray.set_state("idle")
         self.tray.show()
         if not is_minimized and not self.window.settings.get("start_minimized", False):
             self.window.show()
@@ -136,7 +139,7 @@ class AppCoordinator(QObject):
         self.log("• Микрофон: активен и готов к записи речи")
         self.log(f"• Распознавание речи: Faster-Whisper {self.stt.model_size.capitalize()} на {stt_mode}")
         self.log(f"• Модуль ИИ: {ai_mode}")
-        self.log("• Клавиша Copilot: перехватчик активен (VK_F23 = 0x8E)")
+        self.log("• Клавиша Copilot: перехватчик активен (VK_F23 = 0x86 / OEM 0x8E)")
         self.log("• Интеграция: Antigravity IDE (GUI) + Antigravity CLI (agy)")
         self.log("==================================================")
 
@@ -150,6 +153,7 @@ class AppCoordinator(QObject):
         # Сигналы логов и UI
         self.log_signal.connect(self.window.log)
         self.vu_meter_signal.connect(self.window.set_vu_level)
+        self.vu_meter_signal.connect(self.pill.update_vu)
         self.pill_text_signal.connect(self.pill.update_text)
         self.pill_executing_signal.connect(self.pill.show_executing)
         self.pill_error_signal.connect(self.pill.show_error)
@@ -165,6 +169,8 @@ class AppCoordinator(QObject):
         self.window.test_sound_requested.connect(self._run_test_sound)
         self.window.test_mic_requested.connect(self._run_test_mic)
         self.window.test_stt_requested.connect(self._run_test_stt)
+        self.window.test_tts_requested.connect(self._run_test_tts)
+        self.window.command_sim_requested.connect(self._handle_text_command)
         self.window.download_llm_requested.connect(self._run_download_llm)
         self.window.check_all_systems_requested.connect(self._run_check_all_systems)
 
@@ -175,8 +181,10 @@ class AppCoordinator(QObject):
         self.llm_download_done_signal.connect(self._on_llm_download_done)
 
         self.tray.show_window_requested.connect(self._show_window)
+        self.tray.spotlight_requested.connect(self.spotlight.show_spotlight)
         self.tray.toggle_agent_requested.connect(lambda: self.toggle_agent(not self.is_agent_running))
         self.tray.exit_requested.connect(self.exit_app)
+        self.tray_state_signal.connect(self.tray.set_state)
 
         # Сигнал подтверждения опасных действий
         self.confirm_action_signal.connect(self._show_confirmation_dialog)
@@ -196,12 +204,18 @@ class AppCoordinator(QObject):
         )
         if reply == QMessageBox.StandardButton.Yes:
             command.setdefault("parameters", {})["confirmed"] = True
-            success, msg = self.executor.execute(command)
-            if success:
-                self.pill_executing_signal.emit(msg)
-                self._play_sound("success")
-                if self.window.settings.get("tts_enabled", False):
-                    self.tts.speak(msg)
+
+            def run_async():
+                success, msg = self.executor.execute(command)
+                if success:
+                    self.pill_executing_signal.emit(msg)
+                    self._play_sound("success")
+                    if self.window.settings.get("tts_enabled", False):
+                        self.tts.speak(msg)
+                else:
+                    self.pill_error_signal.emit("Ошибка")
+
+            threading.Thread(target=run_async, daemon=True).start()
         else:
             self.log("Опасное системное действие отменено пользователем.")
             self.pill_error_signal.emit("Отменено")
@@ -259,6 +273,9 @@ class AppCoordinator(QObject):
         if hasattr(self.vision_manager, "model_name") and self.vision_manager.model_name != vision_model:
             self.vision_manager.model_name = vision_model
             self.log(f"Модель Vision-агента изменена на «{vision_model}».")
+            if self.vision_manager.is_running():
+                self.vision_manager.stop()
+                self.vision_manager.start()
 
         self._apply_activation_mode()
 
@@ -315,6 +332,16 @@ class AppCoordinator(QObject):
             if self.window.settings.get("audio_ducking_enabled", True):
                 self.audio_ducker.unduck()
             self.log("✓ Звуковой сигнал и система Audio Ducking работают в штатном режиме.")
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _run_test_tts(self, voice_name: str = ""):
+        """Тестовое воспроизведение синтеза речи (SAPI5)."""
+        def worker():
+            target_voice = voice_name or self.window.settings.get("tts_voice", "")
+            self.log(f"🔊 Тест синтеза речи (SAPI5): «{target_voice or 'По умолчанию'}»...")
+            self.tts.voice_name = target_voice
+            self.tts.speak("Голосовой ассистент Antigravity готов к работе.", async_mode=False)
+            self.log("✓ Синтез речи SAPI5 успешно воспроизведён.")
         threading.Thread(target=worker, daemon=True).start()
 
     def _run_test_mic(self):
@@ -403,10 +430,11 @@ class AppCoordinator(QObject):
 
     def _run_check_all_systems(self):
         """Выполняет комплексную проверку всех подсистем ассистента."""
-        if self._is_processing_voice:
-            self.log("⚠ Проверка отложена: в данный момент обрабатывается голосовой ввод.")
-            self.window.reset_check_all_systems_button()
-            return
+        with self._voice_lock:
+            if self._is_processing_voice:
+                self.log("⚠ Проверка отложена: в данный момент обрабатывается голосовой ввод.")
+                self.window.reset_check_all_systems_button()
+                return
 
         def worker():
             self.log("==================================================")
@@ -492,12 +520,12 @@ class AppCoordinator(QObject):
                 fast_ok = test_res.get("action") == "set_volume"
                 has_llm = self.decision_engine.is_llm_available()
                 if has_llm:
-                    self.card_status_signal.emit("ai", "Локальная LLM (Qwen2.5)", "#34D399")
-                    self.log("[4/7] 🤖 Модуль ИИ: OK (Fast-Path готов + Локальная нейросеть Qwen2.5 активна)")
-                    summary_results.append("Модуль ИИ: OK (LLM)")
+                    self.card_status_signal.emit("ai", "Jedi-3B (Always-Warm)", "#34D399")
+                    self.log("[4/7] 🤖 Модуль ИИ: OK (Fast-Path готов + Vision-агент Jedi-3B активен)")
+                    summary_results.append("Модуль ИИ: OK (Jedi-3B)")
                 else:
                     self.card_status_signal.emit("ai", "Fast-Path (0 мс)", "#60A5FA")
-                    self.log("[4/7] 🤖 Модуль ИИ: OK (Fast-Path готов, LLM доступна для скачивания)")
+                    self.log("[4/7] 🤖 Модуль ИИ: OK (Fast-Path готов, Jedi-3B доступна для скачивания)")
                     summary_results.append("Модуль ИИ: OK (Fast-Path)")
             except Exception as e:
                 self.card_status_signal.emit("ai", "Ошибка", "#EF4444")
@@ -587,6 +615,12 @@ class AppCoordinator(QObject):
         events = self.vision_manager.poll_status()
         for ev in events:
             ev_type = ev.get("type")
+            if ev_type in ("task_started", "step_status", "action_decided"):
+                self.tray_state_signal.emit("working")
+            elif ev_type in ("task_completed", "error", "interrupted"):
+                if self.is_agent_running:
+                    self.tray_state_signal.emit("idle")
+
             if ev_type == "ready":
                 self.log("✓ Vision Computer-Use Agent (Jedi-3B) готов к работе в фоновом процессе.")
             elif ev_type == "task_started":
@@ -607,6 +641,24 @@ class AppCoordinator(QObject):
                 x = ev.get("x", 0)
                 y = ev.get("y", 0)
                 self.click_overlay.show_click(x, y)
+            elif ev_type == "confirmation_requested":
+                msg_text = ev.get("message", "Действие требует подтверждения.")
+                self.log(f"⚠ Vision-агент запросил подтверждение: {msg_text}")
+                msg_box = QMessageBox(self.window)
+                msg_box.setIcon(QMessageBox.Icon.Warning)
+                msg_box.setWindowTitle("Подтверждение действия")
+                msg_box.setText(f"Vision-агент запрашивает подтверждение:\n\n«{msg_text}»\n\nРазрешить выполнение действия?")
+                btn_allow = msg_box.addButton("Разрешить", QMessageBox.ButtonRole.AcceptRole)
+                btn_cancel = msg_box.addButton("Отменить", QMessageBox.ButtonRole.RejectRole)
+                msg_box.setDefaultButton(btn_cancel)
+                msg_box.setWindowFlags(msg_box.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+                msg_box.exec()
+                if msg_box.clickedButton() != btn_allow:
+                    self.vision_manager.abort_task()
+                    self.pill.show_error("Отменено")
+                    self.log("Действие Vision-агента отменено пользователем.")
+                else:
+                    self.log("Действие Vision-агента разрешено пользователем.")
             elif ev_type == "interrupted":
                 reason = ev.get("reason", "Прервано пользователем")
                 self.pill.show_error(reason)
@@ -657,11 +709,14 @@ class AppCoordinator(QObject):
             self._is_processing_voice = True
 
         def worker():
+            is_vision = False
+            success = False
             try:
                 text = pre_command.strip() if pre_command else ""
 
                 if not text:
                     # 1. Сигнал и пилюля
+                    self.tray_state_signal.emit("listening")
                     self._play_sound("activate")
                     self.pill_listening_signal.emit()
 
@@ -738,6 +793,8 @@ class AppCoordinator(QObject):
                     self.audio_ducker.unduck()
                 with self._voice_lock:
                     self._is_processing_voice = False
+                if self.is_agent_running and not (is_vision and success):
+                    self.tray_state_signal.emit("idle")
 
         threading.Thread(target=worker, daemon=True).start()
 

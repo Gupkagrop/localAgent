@@ -18,6 +18,8 @@ VK_LSHIFT = 0xA0       # Левый Shift
 VK_APPS = 0x5D         # Клавиша Menu/Application
 VK_CONTROL = 0x11      # Виртуальная клавиша Ctrl для маскирования Win-клавиши
 VK_KEY_J = 0x4A        # Клавиша 'J' для глобального шортката Ctrl+Shift+J
+VK_SPACE = 0x20        # Клавиша Space
+VK_MENU = 0x12         # Клавиша Alt
 VK_ESCAPE = 0x1B       # Клавиша Escape
 VK_MASK = 0xFF         # vkFF (AutoHotkey #MenuMaskKey для нейтрализации меню Пуск)
 
@@ -171,6 +173,19 @@ class CopilotKeyHook:
                     if msg in (WM_KEYDOWN, WM_SYSKEYDOWN):
                         if self.on_click:
                             self.on_click()
+                    return False
+
+            # 6. Хоткеи со Space: Alt + Space (Spotlight) и Ctrl + Space (Tap-to-Talk)
+            if vk == VK_SPACE:
+                alt_down = bool(ctypes.windll.user32.GetAsyncKeyState(VK_MENU) & 0x8000)
+                ctrl_down = bool(ctypes.windll.user32.GetAsyncKeyState(VK_CONTROL) & 0x8000)
+                if alt_down:
+                    if msg in (WM_KEYDOWN, WM_SYSKEYDOWN) and self.on_hold:
+                        self.on_hold()
+                    return False
+                if ctrl_down:
+                    if msg in (WM_KEYDOWN, WM_SYSKEYDOWN) and self.on_click:
+                        self.on_click()
                     return False
 
             return True

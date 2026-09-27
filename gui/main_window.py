@@ -20,6 +20,7 @@ from PyQt6.QtGui import QFont, QCloseEvent
 
 from gui.styles import DARK_THEME_QSS
 from gui.close_dialog import CloseConfirmDialog
+from core.text_to_speech import TextToSpeech
 
 class MainWindow(QMainWindow):
     agent_toggle_requested = pyqtSignal(bool)
@@ -29,6 +30,8 @@ class MainWindow(QMainWindow):
     test_mic_requested = pyqtSignal()
     test_sound_requested = pyqtSignal()
     test_stt_requested = pyqtSignal()
+    test_tts_requested = pyqtSignal(str)
+    command_sim_requested = pyqtSignal(str)
     download_llm_requested = pyqtSignal()
     check_all_systems_requested = pyqtSignal()
 
@@ -208,6 +211,24 @@ class MainWindow(QMainWindow):
         health_layout.addLayout(key_test_box)
 
         ctrl_layout.addWidget(health_box)
+
+        # Симулятор голосовых команд (быстрое тестирование без микрофона)
+        sim_box = QGroupBox("Симулятор голосовых команд", tab_control_content)
+        sim_layout = QHBoxLayout(sim_box)
+        sim_layout.setContentsMargins(12, 8, 12, 8)
+        sim_layout.setSpacing(8)
+
+        self.txt_command_sim = QLineEdit(sim_box)
+        self.txt_command_sim.setPlaceholderText("Введите тестовую команду (например, «громкость 50%» или «открой ютуб»)...")
+        self.txt_command_sim.returnPressed.connect(self._on_command_sim_executed)
+        sim_layout.addWidget(self.txt_command_sim, stretch=1)
+
+        self.btn_command_sim = QPushButton("▶ Выполнить", sim_box)
+        self.btn_command_sim.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_command_sim.clicked.connect(self._on_command_sim_executed)
+        sim_layout.addWidget(self.btn_command_sim)
+
+        ctrl_layout.addWidget(sim_box)
 
         # Индикатор громкости микрофона (VU-метр)
         vu_box = QGroupBox("Уровень сигнала микрофона в реальном времени (VU)", tab_control_content)
@@ -405,10 +426,34 @@ class MainWindow(QMainWindow):
         self.cb_sound_cues.toggled.connect(self._on_sound_cues_toggled)
         sys_layout.addWidget(self.cb_sound_cues)
 
-        self.cb_tts = QCheckBox("Озвучивать ответы ассистента голосом (Text-to-Speech SAPI5)", sys_box)
+        # Связка Text-to-Speech (SAPI5): чекбокс, селектор голосов и кнопка теста
+        tts_row = QHBoxLayout()
+        tts_row.setSpacing(8)
+
+        self.cb_tts = QCheckBox("Озвучивать ответы (TTS):", sys_box)
         self.cb_tts.setChecked(self.settings.get("tts_enabled", False))
         self.cb_tts.toggled.connect(self._on_tts_toggled)
-        sys_layout.addWidget(self.cb_tts)
+        tts_row.addWidget(self.cb_tts)
+
+        self.cb_tts_voice = QComboBox(sys_box)
+        available_voices = TextToSpeech.get_available_voices()
+        saved_voice = self.settings.get("tts_voice", "")
+        for v in available_voices:
+            self.cb_tts_voice.addItem(v["name"], v["id"])
+        if saved_voice:
+            idx = self.cb_tts_voice.findData(saved_voice)
+            if idx >= 0:
+                self.cb_tts_voice.setCurrentIndex(idx)
+        self.cb_tts_voice.setEnabled(self.cb_tts.isChecked())
+        self.cb_tts_voice.currentIndexChanged.connect(self._on_tts_voice_selected)
+        tts_row.addWidget(self.cb_tts_voice, stretch=1)
+
+        self.btn_test_tts = QPushButton("🔊 Тест", sys_box)
+        self.btn_test_tts.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_test_tts.clicked.connect(self._on_test_tts_clicked)
+        tts_row.addWidget(self.btn_test_tts)
+
+        sys_layout.addLayout(tts_row)
 
         btn_reset_close = QPushButton("Сбросить запомненный выбор при закрытии окна", sys_box)
         btn_reset_close.clicked.connect(self._reset_close_behavior)
@@ -711,7 +756,29 @@ class MainWindow(QMainWindow):
 
     def _on_tts_toggled(self, checked: bool):
         self.settings["tts_enabled"] = checked
+        if hasattr(self, "cb_tts_voice"):
+            self.cb_tts_voice.setEnabled(checked)
         self.save_settings()
+
+    def _on_tts_voice_selected(self, index: int):
+        if hasattr(self, "cb_tts_voice"):
+            voice_id = self.cb_tts_voice.currentData()
+            if voice_id:
+                self.settings["tts_voice"] = voice_id
+                self.save_settings()
+
+    def _on_test_tts_clicked(self):
+        voice_id = self.cb_tts_voice.currentData() if hasattr(self, "cb_tts_voice") else ""
+        self.test_tts_requested.emit(str(voice_id or ""))
+
+    def _on_command_sim_executed(self):
+        if not hasattr(self, "txt_command_sim"):
+            return
+        cmd = self.txt_command_sim.text().strip()
+        if not cmd:
+            return
+        self.txt_command_sim.clear()
+        self.command_sim_requested.emit(cmd)
 
     def _reset_close_behavior(self):
         self.settings["close_behavior"] = "ask"

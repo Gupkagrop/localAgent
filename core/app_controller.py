@@ -6,6 +6,7 @@
 import os
 import re
 import time
+import threading
 import ctypes
 import subprocess
 from typing import Optional, Callable, Any
@@ -320,7 +321,10 @@ class DesktopAppController:
         if not clipboard_opened:
             return False, "Буфер обмена Windows временно заблокирован другим приложением"
 
+        prev_clipboard = None
         try:
+            if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
+                prev_clipboard = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
             win32clipboard.EmptyClipboard()
             win32clipboard.SetClipboardText(text, win32con.CF_UNICODETEXT)
         finally:
@@ -332,6 +336,22 @@ class DesktopAppController:
         if submit:
             time.sleep(0.08)
             self._send_key(VK_RETURN)
+
+        # Восстанавливаем буфер обмена пользователя
+        if prev_clipboard is not None:
+            def restore_clipboard():
+                time.sleep(0.08)
+                for _ in range(5):
+                    try:
+                        win32clipboard.OpenClipboard()
+                        win32clipboard.EmptyClipboard()
+                        win32clipboard.SetClipboardText(prev_clipboard, win32con.CF_UNICODETEXT)
+                        win32clipboard.CloseClipboard()
+                        break
+                    except Exception:
+                        time.sleep(0.04)
+
+            threading.Thread(target=restore_clipboard, daemon=True).start()
 
         self.log(f"Введен текст в {app_name}: {text}")
         return True, f"Введено в {app_name}"

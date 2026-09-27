@@ -8,6 +8,7 @@
 import json
 import os
 import re
+import urllib.parse
 from typing import Any, Dict, List, Optional
 
 
@@ -16,7 +17,6 @@ class DecisionEngine:
 
     def __init__(self, config_path: Optional[str] = None, models_dir: Optional[str] = None) -> None:
         self.project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.models_dir = models_dir or os.path.join(self.project_dir, "models")
         self.commands_path = config_path or os.path.join(self.project_dir, "config", "commands.json")
         self._load_commands_config()
 
@@ -74,15 +74,19 @@ class DecisionEngine:
         jedi_dir = os.path.join(cache_hub, "models--xlangai--Jedi-3B-1080p")
         qwen_dir = os.path.join(cache_hub, "models--Qwen--Qwen2.5-VL-3B-Instruct")
         for mdir in (jedi_dir, qwen_dir):
-            if os.path.exists(mdir):
-                snap_dir = os.path.join(mdir, "snapshots")
-                if os.path.exists(snap_dir) and len(os.listdir(snap_dir)) > 0:
+            if not os.path.exists(mdir):
+                continue
+            snap_dir = os.path.join(mdir, "snapshots")
+            if not os.path.exists(snap_dir):
+                continue
+            for _, _, files in os.walk(snap_dir):
+                if any(f.endswith(".safetensors") or f.endswith(".bin") or f == "config.json" for f in files):
                     return True
         return False
 
     def load_model(self) -> bool:
-        """Проверяет доступность директории моделей (совместимость)."""
-        return os.path.exists(self.models_dir)
+        """Проверяет доступность модели Vision-агента (совместимость)."""
+        return self.is_llm_available()
 
     def unload_model(self) -> None:
         """Освобождает ресурсы модели (совместимость интерфейса)."""
@@ -136,6 +140,24 @@ class DecisionEngine:
         if "антигравити" in q_lower or "antigravity" in q_lower:
             if any(w in q_lower for w in ["новый чат", "создай чат"]):
                 return {"action": "antigravity_gui", "target": "new_chat", "parameters": {}}
+
+            # Контекстный сценарий работы с кодом/ошибкой из буфера обмена (Ctrl+C)
+            clipboard_patterns = [
+                r"спроси\s+(?:в\s+)?(?:антигравити|antigravity)\s+(?:про\s+)?(?:эту\s+|этот\s+)?(?:ошибк[уае]|код|текст)",
+                r"исправь\s+(?:этот\s+)?код\s+(?:в\s+)?(?:антигравити|antigravity)",
+                r"объясни\s+(?:эту\s+)?ошибк[уае]\s+(?:в\s+)?(?:антигравити|antigravity)",
+                r"(?:в\s+)?(?:антигравити|antigravity)\s+(?:исправь|объясни)\s+(?:этот\s+)?(?:код|ошибк[уае])",
+                r"(?:в\s+)?(?:антигравити|antigravity)\s+спроси\s+(?:про\s+)?(?:эту\s+|этот\s+)?(?:ошибк[уае]|код|текст)",
+            ]
+            if any(re.search(p, q_lower) for p in clipboard_patterns):
+                return {
+                    "action": "antigravity_cli",
+                    "target": "launch",
+                    "parameters": {
+                        "prompt": "Объясни и исправь следующую ошибку/код:",
+                        "use_clipboard": True
+                    }
+                }
 
             prompt_match = re.search(r"(?:напиши|спроси|отправь|скажи)\s+(?:в\s+)?(?:антигравити|antigravity)\s+(.+)", raw_query, re.IGNORECASE)
             if prompt_match:
@@ -260,7 +282,7 @@ class DecisionEngine:
             search_query = google_match.group(1).strip()
             return {
                 "action": "open_url",
-                "target": f"https://www.google.com/search?q={search_query}",
+                "target": f"https://www.google.com/search?q={urllib.parse.quote(search_query)}",
                 "parameters": {"query": search_query}
             }
 
@@ -286,7 +308,6 @@ class DecisionEngine:
         yt_search_match = re.search(r"^(?:найди|поищи)\s+(?:на\s+ютубе|в\s+ютубе|на\s+youtube|в\s+youtube)\s+(.+)", q)
         if yt_search_match:
             yt_query = yt_search_match.group(1).strip()
-            import urllib.parse
             return {
                 "action": "open_url",
                 "target": f"https://www.youtube.com/results?search_query={urllib.parse.quote(yt_query)}",

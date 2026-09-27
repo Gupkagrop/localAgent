@@ -253,6 +253,8 @@ class AudioListener:
         Переводит существующий поток в режим записи команды и ждет паузы в речи.
         Никаких повторных открытий устройств sounddevice.
         """
+        self._record_done_event.clear()
+
         if not self._is_running:
             self.start_stream()
 
@@ -264,7 +266,6 @@ class AudioListener:
             self._silence_start = None
             self._record_start_time = time.time()
             self._max_duration_sec = max_duration_sec
-            self._record_done_event.clear()
 
         # Ждем пока пользователь выскажется или истечет таймаут
         self._record_done_event.wait(timeout=max_duration_sec + 0.5)

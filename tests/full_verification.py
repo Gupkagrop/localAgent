@@ -240,6 +240,14 @@ def test_vision_computer_use_agent():
         manager = VisionAgentProcessManager()
         overlay = ClickIndicatorOverlay()
         print(f"  [OK] VisionAgentProcessManager: модель '{manager.model_name}', ClickIndicatorOverlay готов ({overlay.size_px}px)")
+
+        # 6. Архитектурная изоляция PyTorch (torch не должен загружаться в основной процесс)
+        if "torch" not in sys.modules:
+            print("  [OK] Архитектурная изоляция: PyTorch отсутствует в основном процессе (0 МБ оверхеда VRAM/RAM)")
+        else:
+            print("  [FAIL] Ошибка изоляции: PyTorch обнаружен в sys.modules основного процесса!")
+            return False
+
         return True
     except Exception as e:
         print(f"  [FAIL] Ошибка тестирования Vision-агента: {e}")

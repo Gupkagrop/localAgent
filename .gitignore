@@ -20,8 +20,7 @@ __pycache__/
 
 # 3. Веса и бинарные файлы локальных нейросетей (LLM / VLM / GGUF)
 # Исключаем тяжелые бинарные модели (например, Jedi-3B / Whisper Turbo)
-models/*
-!models/.gitkeep
+/models/
 *.gguf
 *.bin
 *.pt

@@ -49,12 +49,6 @@ class SpeechToText:
                 del self._model
                 self._model = None
                 gc.collect()
-                try:
-                    import torch
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                except Exception:
-                    pass
 
     def is_loaded(self) -> bool:
         return self._model is not None

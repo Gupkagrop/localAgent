@@ -75,7 +75,9 @@ class TestDecisionEngine(unittest.TestCase):
     def test_web_search(self):
         res = self.engine.parse_command("Найди в гугле погода Москва")
         self.assertEqual(res["action"], "open_url")
-        self.assertIn("погода", res["target"])
+        self.assertIn("google.com/search?q=", res["target"])
+        import urllib.parse
+        self.assertIn("погода", urllib.parse.unquote(res["target"]))
 
     def test_youtube_search_complex(self):
         res = self.engine.parse_command("Открой, пожалуйста, ютубчик и включи там видео мармука.")
@@ -447,8 +449,10 @@ class TestConfigs(unittest.TestCase):
         self.assertEqual(data["wake_word"].lower(), "джарвис")
 
     def test_decision_engine_load_model_failure(self):
-        fake_engine = DecisionEngine(models_dir="C:/non_existent_path_xyz")
-        self.assertFalse(fake_engine.load_model())
+        fake_engine = DecisionEngine()
+        import unittest.mock as mock
+        with mock.patch.object(fake_engine, "is_llm_available", return_value=False):
+            self.assertFalse(fake_engine.load_model())
 
 class TestMainWindowFeatures(unittest.TestCase):
     @classmethod
@@ -481,6 +485,61 @@ class TestMainWindowFeatures(unittest.TestCase):
         # 4. Проверка обновления статусной карточки
         window.update_status_card("mic", "Тестовый статус", "#34D399")
         self.assertEqual(window.card_mic.status_label.text(), "Тестовый статус")
+
+class TestTrayManager(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import sys
+        from PyQt6.QtWidgets import QApplication
+        cls.app = QApplication.instance() or QApplication(sys.argv)
+
+    def setUp(self):
+        from gui.tray_manager import TrayManager
+        self.tray = TrayManager()
+
+    def tearDown(self):
+        self.tray.stop()
+
+    def test_state_idle(self):
+        self.tray.set_state("idle")
+        self.assertEqual(self.tray._current_state, "idle")
+        self.assertEqual(self.tray.tray_icon.toolTip(), "Antigravity Voice: Готов к работе")
+        self.assertEqual(self.tray.status_action.text(), "Статус: Активен (Готов)")
+        self.assertEqual(self.tray.action_toggle.text(), "Остановить ассистента (освободить VRAM)")
+        self.assertFalse(self.tray._anim_timer.isActive())
+
+    def test_state_listening(self):
+        self.tray.set_state("listening")
+        self.assertEqual(self.tray._current_state, "listening")
+        self.assertEqual(self.tray.tray_icon.toolTip(), "Antigravity Voice: Запись речи...")
+        self.assertEqual(self.tray.status_action.text(), "Статус: Запись речи...")
+        self.assertEqual(self.tray.action_toggle.text(), "Остановить ассистента (освободить VRAM)")
+        self.assertTrue(self.tray._anim_timer.isActive())
+
+    def test_state_working(self):
+        self.tray.set_state("working")
+        self.assertEqual(self.tray._current_state, "working")
+        self.assertEqual(self.tray.tray_icon.toolTip(), "Antigravity Voice: Vision-агент анализирует экран...")
+        self.assertEqual(self.tray.status_action.text(), "Статус: Анализ экрана...")
+        self.assertEqual(self.tray.action_toggle.text(), "Остановить ассистента (освободить VRAM)")
+        self.assertTrue(self.tray._anim_timer.isActive())
+
+    def test_state_stopped(self):
+        self.tray.set_state("stopped")
+        self.assertEqual(self.tray._current_state, "stopped")
+        self.assertEqual(self.tray.tray_icon.toolTip(), "Antigravity Voice: Остановлен (0 МБ VRAM)")
+        self.assertEqual(self.tray.status_action.text(), "Статус: Остановлен (0 МБ VRAM)")
+        self.assertEqual(self.tray.action_toggle.text(), "Запустить ассистента")
+        self.assertFalse(self.tray._anim_timer.isActive())
+
+    def test_update_status(self):
+        self.tray.update_status(False)
+        self.assertEqual(self.tray._current_state, "stopped")
+        self.assertFalse(self.tray._anim_timer.isActive())
+
+        self.tray.update_status(True)
+        self.assertEqual(self.tray._current_state, "idle")
+        self.assertFalse(self.tray._anim_timer.isActive())
 
 if __name__ == "__main__":
     unittest.main()

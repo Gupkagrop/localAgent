@@ -28,6 +28,12 @@ class AudioDucker:
             if self._is_ducked:
                 return
 
+            try:
+                import comtypes
+                comtypes.CoInitialize()
+            except Exception:
+                pass
+
             endpoint = self._get_volume_endpoint()
             if endpoint is None:
                 return
@@ -48,6 +54,12 @@ class AudioDucker:
             if not self._is_ducked or self._previous_volume is None:
                 return
 
+            try:
+                import comtypes
+                comtypes.CoInitialize()
+            except Exception:
+                pass
+
             endpoint = self._get_volume_endpoint()
             if endpoint is not None:
                 try:
@@ -59,6 +71,12 @@ class AudioDucker:
 
     def set_volume(self, percent: float) -> bool:
         """Устанавливает абсолютный уровень громкости от 0.0 до 1.0."""
+        try:
+            import comtypes
+            comtypes.CoInitialize()
+        except Exception:
+            pass
+
         endpoint = self._get_volume_endpoint()
         if endpoint is None:
             return False
@@ -71,6 +89,12 @@ class AudioDucker:
 
     def get_volume(self) -> float:
         """Возвращает текущую громкость в процентах (0-100)."""
+        try:
+            import comtypes
+            comtypes.CoInitialize()
+        except Exception:
+            pass
+
         endpoint = self._get_volume_endpoint()
         if endpoint is None:
             return 50.0

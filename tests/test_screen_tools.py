@@ -29,8 +29,8 @@ class TestScreenTools(unittest.TestCase):
 
         # Нижний правый угол
         x, y = self.controller.denormalize_coordinate(norm_y=1000, norm_x=1000)
-        self.assertEqual(x, dims.left + dims.width)
-        self.assertEqual(y, dims.top + dims.height)
+        self.assertEqual(x, dims.left + dims.width - 1)
+        self.assertEqual(y, dims.top + dims.height - 1)
 
     def test_denormalize_coordinate_center(self) -> None:
         """Проверка центра экрана (500, 500)."""
@@ -43,7 +43,7 @@ class TestScreenTools(unittest.TestCase):
         """Проверка отсечения координат за пределами диапазона 0..1000."""
         dims = self.controller.dimensions
         x, y = self.controller.denormalize_coordinate(norm_y=-100, norm_x=1200)
-        self.assertEqual(x, dims.left + dims.width)
+        self.assertEqual(x, dims.left + dims.width - 1)
         self.assertEqual(y, dims.top)
 
     def test_active_monitor_detection(self) -> None:

@@ -15,7 +15,6 @@ def main() -> None:
     try:
         local_dir = snapshot_download(
             repo_id=MODEL_ID,
-            resume_download=True,
             max_workers=4
         )
         print(f"\n[{time.strftime('%H:%M:%S')}] [SUCCESS] Модель '{MODEL_ID}' успешно загружена!")

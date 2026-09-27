@@ -18,6 +18,25 @@ class TextToSpeech:
         self.speed: int = max(-10, min(10, converted_speed))
         self._lock = threading.Lock()
 
+    @staticmethod
+    def get_available_voices() -> list[dict]:
+        """Возвращает список доступных в системе голосов SAPI5."""
+        voices = []
+        try:
+            import pythoncom
+            import win32com.client
+            pythoncom.CoInitialize()
+            try:
+                speaker = win32com.client.Dispatch("SAPI.SpVoice")
+                for v in speaker.GetVoices():
+                    desc = v.GetDescription()
+                    voices.append({"id": desc, "name": desc})
+            finally:
+                pythoncom.CoUninitialize()
+        except Exception as e:
+            print(f"[TTS Voices Error] {e}")
+        return voices
+
     def speak(self, text: str, async_mode: bool = True) -> None:
         """Озвучивает текст без блокировки основного потока приложения."""
         if not text.strip():

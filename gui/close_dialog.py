@@ -32,6 +32,29 @@ class CloseConfirmDialog(QDialog):
                 width: 16px;
                 height: 16px;
             }
+            QPushButton {
+                background-color: #262830;
+                border: 1px solid #383B46;
+                border-radius: 8px;
+                padding: 6px 16px;
+                color: #F3F4F6;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: #31343F;
+                border-color: #4B5563;
+            }
+            QPushButton#PrimaryButton {
+                background-color: #2563EB;
+                border: 1px solid #3B82F6;
+                color: #FFFFFF;
+                font-weight: 600;
+            }
+            QPushButton#PrimaryButton:hover {
+                background-color: #1D4ED8;
+                border-color: #60A5FA;
+            }
         """)
 
         layout = QVBoxLayout(self)
