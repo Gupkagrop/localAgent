@@ -69,8 +69,16 @@ class DecisionEngine:
         return "Fast-Path (0 мс) + Vision Computer-Use (Jedi-3B)"
 
     def is_llm_available(self) -> bool:
-        """Проверяет доступность нейросетевого контура (Vision-агент всегда доступен через Worker)."""
-        return True
+        """Проверяет наличие локальных весов модели Vision-агента в кэше HuggingFace."""
+        cache_hub = os.path.expanduser("~/.cache/huggingface/hub")
+        jedi_dir = os.path.join(cache_hub, "models--xlangai--Jedi-3B-1080p")
+        qwen_dir = os.path.join(cache_hub, "models--Qwen--Qwen2.5-VL-3B-Instruct")
+        for mdir in (jedi_dir, qwen_dir):
+            if os.path.exists(mdir):
+                snap_dir = os.path.join(mdir, "snapshots")
+                if os.path.exists(snap_dir) and len(os.listdir(snap_dir)) > 0:
+                    return True
+        return False
 
     def load_model(self) -> bool:
         """Проверяет доступность директории моделей (совместимость)."""
@@ -254,6 +262,35 @@ class DecisionEngine:
                 "action": "open_url",
                 "target": f"https://www.google.com/search?q={search_query}",
                 "parameters": {"query": search_query}
+            }
+
+        # 8b. Прямое воспроизведение видео / музыки на YouTube
+        play_video_match = re.search(
+            r"^(?:включи|поставь|запусти)\s+(?:видео|ролик|клип|песню|трек|музыку|на ютубе|в ютубе)\s+(.+)",
+            q
+        )
+        if play_video_match:
+            video_query = play_video_match.group(1).strip()
+            video_query = re.sub(r"^(?:на\s+ютубе|в\s+ютубе|на\s+youtube|в\s+youtube)\s+", "", video_query).strip()
+            return {
+                "action": "open_url",
+                "target": "https://www.youtube.com",
+                "parameters": {
+                    "query": video_query,
+                    "direct_play": True,
+                    "sort_by_date": False
+                }
+            }
+
+        # 8c. Поиск на YouTube
+        yt_search_match = re.search(r"^(?:найди|поищи)\s+(?:на\s+ютубе|в\s+ютубе|на\s+youtube|в\s+youtube)\s+(.+)", q)
+        if yt_search_match:
+            yt_query = yt_search_match.group(1).strip()
+            import urllib.parse
+            return {
+                "action": "open_url",
+                "target": f"https://www.youtube.com/results?search_query={urllib.parse.quote(yt_query)}",
+                "parameters": {"query": yt_query}
             }
 
         # 9. Быстрые ссылки на популярные разделы сайтов и составные URL

@@ -40,7 +40,6 @@ def test_environment_and_stack():
         ("win32api", "Интеграция с Win32 API"),
         ("win32com.client", "Создание ярлыков Windows"),
         ("numpy", "Обработка числовых аудиомассивов"),
-        ("scipy", "Аудио DSP")
     ]
     all_ok = True
     for pkg, desc in packages:

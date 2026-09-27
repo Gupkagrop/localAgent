@@ -82,6 +82,7 @@ class AppCoordinator(QObject):
 
         self.is_agent_running = True
         self._is_processing_voice = False
+        self._voice_lock = threading.Lock()
 
         # Фоновый запуск Vision-агента в режиме Always-Warm
         self.vision_manager.start()
@@ -318,11 +319,12 @@ class AppCoordinator(QObject):
 
     def _run_test_mic(self):
         """Интерактивный тест микрофона с распознаванием тестовой фразы."""
-        if self._is_processing_voice:
-            return
+        with self._voice_lock:
+            if self._is_processing_voice:
+                return
+            self._is_processing_voice = True
 
         def worker():
-            self._is_processing_voice = True
             try:
                 self.log("🎙 Тест микрофона: скажите любую фразу вслух (запись 3 секунды)...")
                 self._play_sound("activate")
@@ -342,7 +344,8 @@ class AppCoordinator(QObject):
             except Exception as e:
                 self.log(f"Ошибка при проверке микрофона: {e}")
             finally:
-                self._is_processing_voice = False
+                with self._voice_lock:
+                    self._is_processing_voice = False
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -648,11 +651,12 @@ class AppCoordinator(QObject):
 
     def _handle_voice_input(self, pre_command: str = ""):
         """Запускает процесс записи и распознавания речи в отдельном потоке."""
-        if self._is_processing_voice:
-            return
+        with self._voice_lock:
+            if self._is_processing_voice:
+                return
+            self._is_processing_voice = True
 
         def worker():
-            self._is_processing_voice = True
             try:
                 text = pre_command.strip() if pre_command else ""
 
@@ -732,7 +736,8 @@ class AppCoordinator(QObject):
             finally:
                 if self.window.settings.get("audio_ducking_enabled", True):
                     self.audio_ducker.unduck()
-                self._is_processing_voice = False
+                with self._voice_lock:
+                    self._is_processing_voice = False
 
         threading.Thread(target=worker, daemon=True).start()
 

@@ -322,7 +322,7 @@ class DesktopAppController:
 
         try:
             win32clipboard.EmptyClipboard()
-            win32clipboard.SetClipboardText(text, win32clipboard.CF_UNICODETEXT)
+            win32clipboard.SetClipboardText(text, win32con.CF_UNICODETEXT)
         finally:
             win32clipboard.CloseClipboard()
 

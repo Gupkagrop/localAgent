@@ -355,27 +355,27 @@ def show_executing(self, action_name: str = "Выполняю..."):
 
 ---
 
-## Сводная таблица
+## Сводная таблица исправлений
 
-| ID | Файл | Серьёзность | Тип | Краткое описание |
-|---|---|---|---|---|
-| BUG-01 | `core/vision_agent.py` | 🔴 Критический | Логическая ошибка | Инверсия X/Y координат клика |
-| BUG-02 | `core/screen_tools.py` | 🔴 Критический | Неверная константа Win32 | `MOUSEEVENTF_RIGHTUP = 0x000c` вместо `0x0010` |
-| BUG-03 | `core/app_controller.py` | 🔴 Критический | AttributeError в рантайме | `win32clipboard.CF_UNICODETEXT` не существует |
-| BUG-04 | `core/vision_agent.py` | 🔴 Критический | VRAM утечка | Нет `try/finally` для очистки VRAM при краше |
-| BUG-05 | `core/vision_agent.py` | 🔴 Критический | Портируемость | `.to("cuda")` без проверки доступности GPU |
-| BUG-06 | `core/vision_agent.py` | 🟡 Средний | Неверная документация | Порог 1.5 — не процент, а абс. пиксели 0–255 |
-| BUG-07 | `core/decision_engine.py` | 🟡 Средний | Заглушка | `is_llm_available()` всегда `True` |
-| BUG-08 | `core/keyboard_hook.py` | 🟡 Средний | Несоответствие документации | VK_F23 в коде (0x86) ≠ GEMINI.md (0x8E) |
-| BUG-09 | `core/audio_listener.py` | 🟡 Средний | Data race | `_is_checking_wake` без lock |
-| BUG-10 | `main.py` | 🟡 Средний | TOCTOU | `_is_processing_voice` без lock |
-| BUG-11 | `core/executor.py` | 🟡 Средний | Мёртвый код | `direct_play` никогда не активируется |
-| BUG-12 | `core/executor.py` | 🟢 Незначительный | Поддерживаемость | Пробел в нумерации handlers (пропущен #7) |
-| BUG-13 | `pyproject.toml` | 🟡 Средний | Отсутствующие зависимости | 6+ пакетов не объявлены |
-| BUG-14 | `core/screen_tools.py` | 🟢 Незначительный | Silent fallback | `mss` без логирования ошибки |
-| BUG-15 | `core/text_to_speech.py` | 🟢 Незначительный | Несовместимость типов | `tts_speed: 1.0` ≠ SAPI Rate int; неверный формат voice |
-| BUG-16 | `create_shortcut.py` | 🟡 Средний | Функциональная ошибка | `shortcut.TargetPath` не задан — ярлык нерабочий |
-| BUG-17 | `tests/full_verification.py` | 🟢 Незначительный | Ложная зависимость | `scipy` в проверке, но не используется в коде |
-| BUG-18 | `tests/test_components.py` | 🟢 Незначительный | Слабое покрытие | `AudioDucker.duck/unduck` не тестируется |
-| BUG-19 | `gui/floating_pill.py` | 🟡 Средний | UI bug | `show_executing()` не вызывает `show()` |
-| BUG-20 | `GEMINI.md` | 🟡 Средний | Документация ≠ код | `openwakeword` заявлен, но не реализован |
+| ID | Файл | Серьёзность | Тип | Краткое описание | Статус |
+|---|---|---|---|---|---|
+| BUG-01 | `core/vision_agent.py` | 🔴 Критический | Логическая ошибка | Инверсия X/Y координат клика | ✅ Исправлен ([x, y], denormalize_coordinate) |
+| BUG-02 | `core/screen_tools.py` | 🔴 Критический | Неверная константа Win32 | `MOUSEEVENTF_RIGHTUP = 0x000c` вместо `0x0010` | ✅ Исправлен (0x0010) |
+| BUG-03 | `core/app_controller.py` | 🔴 Критический | AttributeError в рантайме | `win32clipboard.CF_UNICODETEXT` не существует | ✅ Исправлен (`win32con.CF_UNICODETEXT`) |
+| BUG-04 | `core/vision_agent.py` | 🔴 Критический | VRAM утечка | Нет `try/finally` для очистки VRAM при краше | ✅ Исправлен (`try/finally` очистка) |
+| BUG-05 | `core/vision_agent.py` | 🔴 Критический | Портируемость | `.to("cuda")` без проверки доступности GPU | ✅ Исправлен (динамический `device`) |
+| BUG-06 | `core/vision_agent.py` | 🟡 Средний | Неверная документация | Порог 1.5 — не процент, а абс. пиксели 0–255 | ✅ Исправлен (документировано: 1.5 из 255) |
+| BUG-07 | `core/decision_engine.py` | 🟡 Средний | Заглушка | `is_llm_available()` всегда `True` | ✅ Исправлен (проверка кэша HuggingFace) |
+| BUG-08 | `core/keyboard_hook.py` | 🟡 Средний | Несоответствие документации | VK_F23 в коде (0x86) ≠ GEMINI.md (0x8E) | ✅ Исправлен (0x86 SDK / 0x8E OEM) |
+| BUG-09 | `core/audio_listener.py` | 🟡 Средний | Data race | `_is_checking_wake` без lock | ✅ Исправлен (`self._state_lock`) |
+| BUG-10 | `main.py` | 🟡 Средний | TOCTOU | `_is_processing_voice` без lock | ✅ Исправлен (`self._voice_lock`) |
+| BUG-11 | `core/executor.py` | 🟡 Средний | Мёртвый код | `direct_play` никогда не активируется | ✅ Исправлен (паттерны прямого воспроизведения) |
+| BUG-12 | `core/executor.py` | 🟢 Незначительный | Поддерживаемость | Пробел в нумерации handlers (пропущен #7) | ✅ Исправлен (нумерация выровнена) |
+| BUG-13 | `pyproject.toml` | 🟡 Средний | Отсутствующие зависимости | 6+ пакетов не объявлены | ✅ Исправлен (добавлены pillow, mss, vision opt) |
+| BUG-14 | `core/screen_tools.py` | 🟢 Незначительный | Silent fallback | `mss` без логирования ошибки | ✅ Исправлен (добавлен `logger.warning`) |
+| BUG-15 | `core/text_to_speech.py` | 🟢 Незначительный | Несовместимость типов | `tts_speed: 1.0` ≠ SAPI Rate int; неверный формат voice | ✅ Исправлен (конверсия float -> SAPI Rate [-10, 10]) |
+| BUG-16 | `create_shortcut.py` | 🟡 Средний | Функциональная ошибка | `shortcut.TargetPath` не задан — ярлык нерабочий | ✅ Исправлен (`shortcut.TargetPath = pythonw_path`) |
+| BUG-17 | `tests/full_verification.py` | 🟢 Незначительный | Ложная зависимость | `scipy` в проверке, но не используется в коде | ✅ Исправлен (`scipy` удален из проверки) |
+| BUG-18 | `tests/test_components.py` | 🟢 Незначительный | Слабое покрытие | `AudioDucker.duck/unduck` не тестируется | ✅ Исправлен (добавлен unit-тест) |
+| BUG-19 | `gui/floating_pill.py` | 🟡 Средний | UI bug | `show_executing()` не вызывает `show()` | ✅ Исправлен (`self.show()` и `self.raise_()`) |
+| BUG-20 | `GEMINI.md` | 🟡 Средний | Документация ≠ код | `openwakeword` заявлен, но не реализован | ✅ Исправлен (документирован RMS+Whisper) |

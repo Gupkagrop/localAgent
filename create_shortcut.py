@@ -29,6 +29,10 @@ def create_desktop_shortcut():
         except Exception:
             pass
 
+    if not os.path.exists(pythonw_path):
+        pythonw_path = sys.executable.replace("python.exe", "pythonw.exe")
+
+    shortcut.TargetPath = pythonw_path
     shortcut.Arguments = args
     shortcut.WorkingDirectory = project_dir
     shortcut.Description = "Antigravity Voice Assistant"

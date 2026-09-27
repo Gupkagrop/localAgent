@@ -16,4 +16,17 @@ dependencies = [
     "requests>=2.32.0",
     "comtypes>=1.4.0",
     "pynput>=1.7.7",
+    "pillow>=10.0.0",
+    "mss>=9.0.0",
+    "huggingface-hub>=0.23.0",
+]
+
+[project.optional-dependencies]
+vision = [
+    "torch>=2.2.0",
+    "torchvision>=0.17.0",
+    "transformers>=4.45.0",
+    "bitsandbytes>=0.43.0",
+    "accelerate>=0.30.0",
+    "qwen-vl-utils>=0.0.8",
 ]

@@ -108,6 +108,8 @@ class FloatingPill(QWidget):
         self.label.setText(action_name)
         self.adjustSize()
         self._reposition()
+        self.show()
+        self.raise_()
         self._hide_timer.start(2000)  # Скрываем через 2.0 сек после завершения
 
     def show_error(self, message: str = "Не удалось распознать"):
@@ -116,6 +118,8 @@ class FloatingPill(QWidget):
         self.label.setText(message)
         self.adjustSize()
         self._reposition()
+        self.show()
+        self.raise_()
         self._hide_timer.start(2500)
 
 

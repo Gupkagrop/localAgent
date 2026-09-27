@@ -30,7 +30,7 @@
   * `huggingface_hub` (автоматическая и фоновая загрузка весов через `snapshot_download`).
 * **Модели искусственного интеллекта:**
   * **STT (Распознавание речи):** `faster-whisper` (модель `turbo`) с аппаратным ускорением FP16 и VAD-фильтрацией тишины.
-  * **Wake Word:** `openwakeword` (активация по слову-триггеру «Джарвис»).
+  * **Wake Word:** Двухступенчатый контур: быстрое RMS-детектирование энергии речи + мгновенная локальная верификация слова-триггера («Джарвис» или настраиваемое) через Faster-Whisper (0 МБ дополнительной VRAM, без внешних тяжелых зависимостей).
   * **Vision Computer-Use:** `xlangai/Jedi-3B-1080p` (дериватив `Qwen2.5-VL-3B`, натренированный на 4 млн десктопных взаимодействий с разрешением 1080p и сохранением 100% кириллического OCR).
   * **Резервная VLM:** `Qwen/Qwen2.5-VL-3B-Instruct` (автоматический fallback при недоступности основной модели).
 * **Слой взаимодействия с Windows 11:**
@@ -41,7 +41,7 @@
   * **Детекция изменений экрана:** Сравнение пикселей кадров (<1.5% порог изменения) для распознавания блокировки клика рекламой, поп-апами или баннерами cookie с подсказкой модели.
   * **Аварийный Fail-Safe:** Перехват `ESC` (0x1B) и физического смещения мыши (>40 px) для мгновенной остановки действий.
   * **Audio Ducking:** `pycaw` (Windows Core Audio API) — плавное приглушение звука до 20% во время записи речи.
-  * **Перехватчик клавиатуры:** `pynput` с низкоуровневым `win32_event_filter` (Copilot VK_F23 = 0x8E / 0x86, маскирование меню Пуск через #MenuMaskKey 0xFF).
+  * **Перехватчик клавиатуры:** `pynput` с низкоуровневым `win32_event_filter` (Copilot `VK_F23 = 0x86` по стандарту Windows SDK с автоматическим фолбеком `VK_F23_ALT = 0x8E` для OEM-драйверов, маскирование меню Пуск через `#MenuMaskKey` 0xFF).
 * **Пользовательский интерфейс (PyQt6):**
   * `MainWindow`: панель управления в теме Windows 11 Fluent Dark с карточками статуса и логами.
   * `FloatingPill`: плавающий статус-оверлей с динамическим шагом `[1/8] Анализирую экран...`.
@@ -56,7 +56,7 @@
 ```mermaid
 flowchart TD
     subgraph MainProcess ["Главный GUI-процесс (main.py / PyQt6)"]
-        Key["Copilot Key (F23 / 0x8E)"] --> STT["Faster-Whisper Turbo (CUDA FP16)"]
+        Key["Copilot Key (F23: 0x86 SDK / 0x8E OEM)"] --> STT["Faster-Whisper Turbo (CUDA FP16)"]
         STT --> Router{"DecisionEngine Router"}
         Router -- "Fast-Path (0 мс)" --> FastExec["AppController (Громкость, Окна)"]
         Router -- "Vision-Path (Web, UI)" --> PreFocus["Автофокус Google Chrome"]
@@ -103,7 +103,7 @@ localAgent/
 │   ├── vision_agent.py            # Ядро Computer-Use (Jedi-3B, Fail-Safe, очереди IPC, воркер)
 │   ├── decision_engine.py         # Двухуровневый семантический роутер (Fast Path vs Vision Path)
 │   ├── app_controller.py          # Управление окнами Windows (запуск, фокус, сворачивание)
-│   ├── keyboard_hook.py           # Низкоуровневый перехватчик клавиши Copilot (F23 / 0x8E)
+│   ├── keyboard_hook.py           # Низкоуровневый перехватчик клавиши Copilot (F23: 0x86 SDK / 0x8E OEM)
 │   ├── text_to_speech.py          # Синтез голосовых ответов (TTS)
 │   └── executor.py                # Исполнитель Win32, автофокус Chrome и интеграция с Vision-агентом
 ├── gui/

@@ -140,10 +140,10 @@ class CommandExecutor:
             return self.app_controller.launch_or_focus(app_name, target_str)
 
         # 6. Открытие веб-ссылок и прямое воспроизведение роликов
-        if action == "open_url":
+        if action in ("open_url", "direct_play"):
             target_url = str(target)
-            if params.get("direct_play"):
-                query = params.get("query", "")
+            if action == "direct_play" or params.get("direct_play"):
+                query = params.get("query", "") or target_url
                 sort_by_date = params.get("sort_by_date", False)
                 resolved_url = self._resolve_youtube_video(query, sort_by_date=sort_by_date)
                 if resolved_url:
@@ -159,7 +159,7 @@ class CommandExecutor:
                 return False, f"Ошибка открытия ссылки: {e}"
 
 
-        # 8. Управление окнами приложений (закрыть, свернуть, развернуть, рабочий стол)
+        # 7. Управление окнами приложений (закрыть, свернуть, развернуть, рабочий стол)
         if action == "window_control":
             app_name = params.get("app_name", "")
             if target == "close":
@@ -172,7 +172,7 @@ class CommandExecutor:
                 return self.app_controller.minimize_all()
             return False, "Неизвестное действие с окном"
 
-        # 9. Ввод текста и поиск внутри приложений
+        # 8. Ввод текста и поиск внутри приложений
         if action == "app_type":
             app_name = params.get("app_name", "")
             text_to_type = params.get("text", "")
@@ -185,13 +185,13 @@ class CommandExecutor:
                 search_mode=search_mode
             )
 
-        # 10. Горячие клавиши внутри приложений (новые вкладки и т.д.)
+        # 9. Горячие клавиши внутри приложений (новые вкладки и т.д.)
         if action == "app_hotkey":
             app_name = params.get("app_name", "текущее")
             hotkey = target or params.get("hotkey", "")
             return self.app_controller.send_app_hotkey(app_name, hotkey)
 
-        # 11. Системные действия (выключение/перезагрузка)
+        # 10. Системные действия (выключение/перезагрузка)
 
 
         if action == "system_action":
@@ -221,7 +221,7 @@ class CommandExecutor:
                     return False, f"Ошибка блокировки: {e}"
             return True, "Действие отменено"
 
-        # 12. Автономный Vision Computer-Use Agent (Jedi-3B / Qwen2.5-VL)
+        # 11. Автономный Vision Computer-Use Agent (Jedi-3B / Qwen2.5-VL)
         if action == "vision_agent":
             return self._handle_vision_agent(command)
 
@@ -319,7 +319,7 @@ class CommandExecutor:
 
                 try:
                     win32clipboard.EmptyClipboard()
-                    win32clipboard.SetClipboardText(prompt_text, win32clipboard.CF_UNICODETEXT)
+                    win32clipboard.SetClipboardText(prompt_text, win32con.CF_UNICODETEXT)
                 finally:
                     win32clipboard.CloseClipboard()
 

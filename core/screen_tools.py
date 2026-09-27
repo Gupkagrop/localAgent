@@ -3,12 +3,15 @@
 Обеспечивает захват экрана, преобразование координат с учетом DPI и эмуляцию мыши/клавиатуры.
 """
 
+import logging
 import ctypes
 from ctypes import wintypes
 import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
 from PIL import Image
+
+logger = logging.getLogger("ScreenTools")
 
 # Установка DPI-awareness для корректного разрешения экрана в Windows 10/11
 try:
@@ -288,8 +291,8 @@ class ScreenController:
                     target_mon = sct.monitors[1]
                 sct_img = sct.grab(target_mon)
                 return Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("mss screen capture failed: %s, falling back to PIL ImageGrab", e)
 
         # 3. Фолбек на стандартный ImageGrab
         try:

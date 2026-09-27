@@ -194,11 +194,12 @@ class AudioListener:
 
     def _async_check_wake_word(self, audio: np.ndarray):
         """Асинхронный инференс STT для проверки слова-триггера."""
-        if self._is_checking_wake:
-            return
+        with self._state_lock:
+            if self._is_checking_wake:
+                return
+            self._is_checking_wake = True
 
         def worker():
-            self._is_checking_wake = True
             try:
                 if self._stt_engine and self._mode == "wake_listen":
                     text = self._stt_engine.transcribe(audio).lower().strip()
@@ -242,7 +243,8 @@ class AudioListener:
             except Exception:
                 pass
             finally:
-                self._is_checking_wake = False
+                with self._state_lock:
+                    self._is_checking_wake = False
 
         threading.Thread(target=worker, daemon=True).start()
 

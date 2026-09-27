@@ -7,9 +7,15 @@ import threading
 from typing import Optional
 
 class TextToSpeech:
-    def __init__(self, voice_name: Optional[str] = None, speed: int = 0):
+    def __init__(self, voice_name: Optional[str] = None, speed: float | int = 0):
         self.voice_name = voice_name
-        self.speed = speed  # От -10 до 10 в SAPI
+        # SAPI5 ожидает целочисленный Rate в диапазоне [-10, 10].
+        # Если передан коэффициент скорости (например 1.0 или 1.2), масштабируем его:
+        if isinstance(speed, float) and 0.1 <= speed <= 3.0:
+            converted_speed = int((speed - 1.0) * 10)
+        else:
+            converted_speed = int(speed)
+        self.speed: int = max(-10, min(10, converted_speed))
         self._lock = threading.Lock()
 
     def speak(self, text: str, async_mode: bool = True) -> None:
