@@ -7,6 +7,7 @@ import os
 import re
 import json
 import time
+import base64
 import threading
 import ctypes
 import subprocess
@@ -202,8 +203,6 @@ class CommandExecutor:
             return self.app_controller.send_app_hotkey(app_name, hotkey)
 
         # 10. Системные действия (выключение/перезагрузка)
-
-
         if action == "system_action":
             confirmed = params.get("confirmed", False)
             if (target in ("shutdown", "restart") or params.get("dangerous")) and not confirmed:
@@ -315,12 +314,10 @@ class CommandExecutor:
 
         if not hwnd:
             # Окно не найдено - запускаем Antigravity
-            try:
-                subprocess.Popen(["cmd", "/c", "start", "", "antigravity"], shell=True)
+            if self.app_controller.launch_antigravity_gui():
                 self.log("Запускаю Antigravity 2.0...")
                 return True, "Запускаю Antigravity 2.0"
-            except Exception as e:
-                return False, f"Не удалось открыть Antigravity: {e}"
+            return False, "Не удалось открыть Antigravity"
 
         try:
             # Выводим окно на передний план
@@ -393,7 +390,6 @@ class CommandExecutor:
 
     def _handle_antigravity_cli(self, prompt: str, params: Optional[dict] = None) -> tuple[bool, str]:
         """Запускает Antigravity CLI в Windows Terminal."""
-        import base64
         cli_exe = self.cli_executable
 
         if params and params.get("use_clipboard"):
@@ -417,9 +413,11 @@ class CommandExecutor:
             except Exception as e:
                 self.log(f"Предупреждение при чтении буфера обмена: {e}")
 
-        # Формируем Base64-команду PowerShell для исключения shell injection
+        # Формируем Base64-команду PowerShell с безопасной передачей промпта через переменную окружения
+        env = os.environ.copy()
         if prompt:
-            ps_script = f"& '{cli_exe}' -p {json.dumps(prompt)}"
+            env["AGY_PROMPT"] = prompt
+            ps_script = f"& '{cli_exe}' -p $env:AGY_PROMPT"
         else:
             ps_script = f"& '{cli_exe}'"
 
@@ -428,14 +426,14 @@ class CommandExecutor:
         try:
             # Запуск через Windows Terminal с флагом -EncodedCommand без shell=True
             args = ["wt.exe", "-w", "0", "nt", "powershell.exe", "-NoExit", "-EncodedCommand", encoded]
-            subprocess.Popen(args, shell=False)
+            subprocess.Popen(args, env=env, shell=False)
             self.log(f"Запущен Antigravity CLI с задачей: {prompt or 'интерактивный режим'}")
             return True, "Antigravity CLI запущен в терминале"
         except Exception:
             # Fallback если wt.exe недоступен
             try:
                 args = ["powershell.exe", "-NoExit", "-EncodedCommand", encoded]
-                subprocess.Popen(args, shell=False)
+                subprocess.Popen(args, env=env, shell=False)
                 return True, "Antigravity CLI запущен в PowerShell"
             except Exception as e:
                 return False, f"Ошибка запуска CLI: {e}"

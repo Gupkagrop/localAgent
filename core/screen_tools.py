@@ -263,24 +263,11 @@ class ScreenController:
         return self._fallback_capture()
 
     def _fallback_capture(self) -> Image.Image:
-        """Резервный захват экрана через Qt GUI, mss или ImageGrab."""
-        # 1. Если активен контекст Qt — используем нативный grabWindow на экране под курсором
-        try:
-            from PyQt6.QtGui import QGuiApplication, QCursor
-            cursor_pos = QCursor.pos()
-            q_screen = QGuiApplication.screenAt(cursor_pos) or QGuiApplication.primaryScreen()
-            if q_screen is not None:
-                pix = q_screen.grabWindow(0)
-                if not pix.isNull():
-                    from PIL import ImageQt
-                    return ImageQt.fromqpixmap(pix).convert("RGB")
-        except Exception:
-            pass
-
-        # 2. Захват экрана через mss (быстрый в изолированном Worker)
+        """Резервный захват экрана через mss или ImageGrab."""
+        # 1. Захват экрана через mss (быстрый в изолированном Worker)
         try:
             import mss
-            with mss.MSS() as sct:
+            with mss.mss() as sct:
                 left, top, width, height = self._current_monitor
                 target_mon = None
                 for mon in sct.monitors[1:]:
@@ -294,13 +281,14 @@ class ScreenController:
         except Exception as e:
             logger.warning("mss screen capture failed: %s, falling back to PIL ImageGrab", e)
 
-        # 3. Фолбек на стандартный ImageGrab
+        # 2. Фолбек на стандартный ImageGrab
         try:
             from PIL import ImageGrab
             return ImageGrab.grab()
         except Exception:
             pass
 
+        # 3. Заглушка при сбое всех методов захвата
         return Image.new("RGB", (self.screen_width, self.screen_height), color=(30, 30, 30))
 
     def denormalize_coordinate(self, norm_x: int, norm_y: int) -> Tuple[int, int]:

@@ -4,13 +4,12 @@
 1. Стек зависимостей и окружение Python 3.12 (.venv)
 2. Поддержку CUDA и CTranslate2 на NVIDIA GeForce RTX 5050
 3. Звуковой контур (SoundDevice + PyCAW Audio Ducking)
-4. Распознавание речи Faster-Whisper Small (CUDA) и сброс VRAM
-5. Маршрутизатор команд DecisionEngine (Fast-Path + GGUF API)
-6. Исполнитель команд CommandExecutor (Antigravity GUI/CLI)
-7. Низкоуровневый перехватчик клавиши Copilot (WH_KEYBOARD_LL + VK_CONTROL)
-8. Графический интерфейс PyQt6 (MainWindow, QScrollArea, Pill, Spotlight, Tray)
-9. Конфигурационные файлы (settings.json, commands.json)
-10. Ярлык на рабочем столе (Antigravity Voice.lnk)
+4. Распознавание речи Faster-Whisper Turbo (CUDA) и сброс VRAM
+5. Маршрутизатор команд DecisionEngine (Fast-Path + Vision-агент Jedi-3B)
+6. Низкоуровневый перехватчик клавиши Copilot (WH_KEYBOARD_LL + VK_CONTROL)
+7. Графический интерфейс PyQt6 (MainWindow, QScrollArea, Pill, Spotlight, Tray)
+8. Ярлык на рабочем столе и конфигурационные файлы (settings.json, commands.json)
+9. Vision Computer-Use агент и экранные инструменты (GDI BitBlt, ScreenController)
 """
 import sys
 import os

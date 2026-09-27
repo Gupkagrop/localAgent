@@ -8,6 +8,8 @@ import time
 import ctypes
 import threading
 from typing import Callable, Optional
+import win32gui
+import win32con
 from pynput import keyboard
 
 VK_F23 = 0x86          # Официальный Windows виртуальный код F23 (134 = 0x86, аппаратный Copilot)
@@ -70,11 +72,14 @@ class CopilotKeyHook:
         except Exception:
             pass
 
-    def dismiss_search_window(self):
+    def dismiss_search_window(self) -> None:
         """Закрывает окно поиска Windows SearchHost при попытке всплытия."""
         try:
-            ctypes.windll.user32.keybd_event(VK_ESCAPE, 0, 0, 0)
-            ctypes.windll.user32.keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, 0)
+            hwnd = win32gui.FindWindow("Windows.UI.Core.CoreWindow", "Windows-Поиск")
+            if not hwnd:
+                hwnd = win32gui.FindWindow("Windows.UI.Core.CoreWindow", "Search")
+            if hwnd and win32gui.IsWindow(hwnd):
+                win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
         except Exception:
             pass
 

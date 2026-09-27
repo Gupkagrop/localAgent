@@ -258,6 +258,11 @@ class AudioListener:
         if not self._is_running:
             self.start_stream()
 
+        # Предотвращение состояния гонки с фоновой проверкой Wake Word (ARCH-4)
+        wait_deadline = time.time() + 0.3
+        while self._is_checking_wake and time.time() < wait_deadline:
+            time.sleep(0.01)
+
         with self._state_lock:
             prev_mode = self._mode
             self._mode = "recording"

@@ -67,6 +67,13 @@ class TestScreenTools(unittest.TestCase):
         self.assertGreater(img.width, 0)
         self.assertGreater(img.height, 0)
 
+    def test_fallback_capture_mss(self) -> None:
+        """Проверка резервного захвата экрана через mss/fallback без падения и без AttributeError."""
+        img = self.controller._fallback_capture()
+        self.assertIsInstance(img, Image.Image)
+        self.assertGreater(img.width, 0)
+        self.assertGreater(img.height, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

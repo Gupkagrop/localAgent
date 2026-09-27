@@ -68,9 +68,19 @@ class ActionParser:
         raw_json = json_match.group(1) if json_match else None
 
         if not raw_json:
-            # Поиск первого сбалансированного JSON-объекта
-            bracket_match = re.search(r"(\{.*\})", response_text, re.DOTALL)
-            raw_json = bracket_match.group(1) if bracket_match else None
+            # Поиск первого валидного JSON-объекта через нежадный regex (BUG-MEDIUM-5)
+            for match in re.finditer(r"(\{.*?\})", response_text, re.DOTALL):
+                candidate = match.group(1)
+                try:
+                    json.loads(candidate)
+                    raw_json = candidate
+                    break
+                except Exception:
+                    continue
+
+            if not raw_json:
+                bracket_match = re.search(r"(\{.*?\})", response_text, re.DOTALL)
+                raw_json = bracket_match.group(1) if bracket_match else None
 
         if not raw_json:
             return VisionAction(
@@ -447,6 +457,8 @@ class VisionAgentProcessManager:
         self._cancel_event: Optional[Any] = None
         self._is_ready: bool = False
         self._is_busy: bool = False
+        self._start_time: Optional[float] = None
+        self._startup_timeout: float = 120.0
 
     def is_running(self) -> bool:
         """Проверяет, запущен ли рабочий процесс."""
@@ -471,6 +483,7 @@ class VisionAgentProcessManager:
         self._cancel_event = mp.Event()
         self._is_ready = False
         self._is_busy = False
+        self._start_time = time.time()
 
         self._process = mp.Process(
             target=_worker_process_loop,
@@ -506,6 +519,7 @@ class VisionAgentProcessManager:
         self._cancel_event = None
         self._is_ready = False
         self._is_busy = False
+        self._start_time = None
 
     def abort_task(self) -> None:
         """Экстренно прерывает выполнение текущей задачи агента без остановки рабочего процесса."""
@@ -525,11 +539,26 @@ class VisionAgentProcessManager:
                 ev_type = ev.get("type")
                 if ev_type == "ready":
                     self._is_ready = True
+                    self._start_time = None
                 elif ev_type in ("task_completed", "interrupted", "error"):
                     self._is_busy = False
+                    if ev_type == "error" and not self._is_ready:
+                        self._start_time = None
                 events.append(ev)
             except Exception:
                 break
+
+        # Защитный таймаут ожидания готовности воркера (ARCH-3)
+        if not self._is_ready and self._start_time is not None:
+            if time.time() - self._start_time > self._startup_timeout:
+                events.append({
+                    "type": "error",
+                    "message": "Превышен таймаут загрузки Vision-модели (120 сек)"
+                })
+                self._start_time = None
+                self._is_busy = False
+                self.stop()
+
         return events
 
     def execute_task(self, prompt: str, max_steps: int = 8) -> bool:

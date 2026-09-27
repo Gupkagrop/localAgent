@@ -87,8 +87,22 @@ DEFAULT_EXECUTABLES: dict[str, str] = {
 }
 
 
+def launch_antigravity_gui() -> bool:
+    """Безопасный запуск Antigravity IDE (GUI) без shell=True."""
+    try:
+        subprocess.Popen(["cmd.exe", "/c", "start", "", "antigravity"], shell=False)
+        return True
+    except Exception:
+        return False
+
+
 class DesktopAppController:
     """Управляет жизненным циклом и окнами приложений Windows."""
+
+    @staticmethod
+    def launch_antigravity_gui() -> bool:
+        """Безопасный запуск Antigravity IDE (GUI) без shell=True."""
+        return launch_antigravity_gui()
 
     def __init__(self, on_log: Optional[Callable[[str], None]] = None):
         self.on_log = on_log
@@ -212,7 +226,8 @@ class DesktopAppController:
         target_exe = executable or DEFAULT_EXECUTABLES.get(clean_name, f"{clean_name}.exe")
         try:
             if target_exe.lower() == "antigravity":
-                subprocess.Popen(["cmd", "/c", "start", "", "antigravity"], shell=True)
+                if not self.launch_antigravity_gui():
+                    return False, f"Не удалось запустить {app_name}"
             else:
                 os.startfile(target_exe)
             self.log(f"Запущено приложение: {target_exe}")
@@ -394,3 +409,7 @@ class DesktopAppController:
         win32api.keybd_event(key_vk, 0, KEYEVENTF_KEYUP, 0)
         time.sleep(0.02)
         win32api.keybd_event(modifier_vk, 0, KEYEVENTF_KEYUP, 0)
+
+
+# Алиас класса для унифицированного доступа и обратной совместимости
+AppController = DesktopAppController
