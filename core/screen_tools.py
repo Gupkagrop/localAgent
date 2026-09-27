@@ -24,7 +24,7 @@ MOUSEEVENTF_MOVE = 0x0001
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
 MOUSEEVENTF_RIGHTDOWN = 0x0008
-MOUSEEVENTF_RIGHTUP = 0x000c
+MOUSEEVENTF_RIGHTUP = 0x0010
 MOUSEEVENTF_MIDDLEDOWN = 0x0020
 MOUSEEVENTF_MIDDLEUP = 0x0040
 MOUSEEVENTF_WHEEL = 0x0800
@@ -300,7 +300,7 @@ class ScreenController:
 
         return Image.new("RGB", (self.screen_width, self.screen_height), color=(30, 30, 30))
 
-    def denormalize_coordinate(self, norm_y: int, norm_x: int) -> Tuple[int, int]:
+    def denormalize_coordinate(self, norm_x: int, norm_y: int) -> Tuple[int, int]:
         """
         Преобразует нормализованные координаты Qwen (0..1000) в реальные экранные пиксели.
         Учитывает физическое смещение активного монитора (left, top) в мультимониторных конфигурациях.

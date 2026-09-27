@@ -22,7 +22,7 @@ Your task is to accomplish the user's goal by looking at the desktop screenshot 
 Output your next action in strict JSON format inside a ```json ``` block with these keys:
 - "thought": A brief explanation in Russian of what you see and what you will do.
 - "action": One of ["click", "double_click", "right_click", "type", "press", "hotkey", "scroll", "wait", "ask_confirmation", "finish"]
-- "coordinate": [y, x] in range 0..1000 (relative to the full screen) for click/double_click/right_click actions.
+- "coordinate": [x, y] in range 0..1000 (relative to the full screen) for click/double_click/right_click actions.
 - "text": string to type (for "type" action).
 - "press_enter": boolean, whether to press Enter after typing.
 - "key": string key name for "press" (e.g. "enter", "esc", "tab", "backspace").
@@ -104,9 +104,9 @@ class ActionParser:
         raw_coord = data.get("coordinate")
         if isinstance(raw_coord, (list, tuple)) and len(raw_coord) >= 2:
             try:
-                y = int(raw_coord[0])
-                x = int(raw_coord[1])
-                coord = (y, x)
+                x = int(raw_coord[0])
+                y = int(raw_coord[1])
+                coord = (x, y)
             except (ValueError, TypeError):
                 coord = None
 
@@ -180,12 +180,17 @@ def _worker_process_loop(
     screen = ScreenController()
     failsafe = FailSafeMonitor()
 
-    # 4-битная квантизация BitsAndBytes NF4
-    quant_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_use_double_quant=True
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # 4-битная квантизация BitsAndBytes NF4 (доступна только при наличии CUDA)
+    quant_config = (
+        BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True
+        )
+        if torch.cuda.is_available()
+        else None
     )
 
     model = None
@@ -225,7 +230,8 @@ def _worker_process_loop(
         status_queue.put({"type": "error", "message": "Ошибка: не удалось загрузить ни основную, ни резервную модель"})
         return
 
-    while not stop_event.is_set():
+    try:
+        while not stop_event.is_set():
         try:
             task = task_queue.get(timeout=0.5)
         except Exception:
@@ -271,7 +277,7 @@ def _worker_process_loop(
                     p2 = image.resize((64, 64), Image.Resampling.NEAREST).convert("L")
                     diff = sum(abs(a - b) for a, b in zip(p1.getdata(), p2.getdata()))
                     avg_diff = diff / (64 * 64)
-                    if avg_diff < 1.5:  # Экран изменился менее чем на 1.5%
+                    if avg_diff < 1.5:  # Среднее изменение яркости пикселей менее 1.5 из 255 (~0.6% от максимума)
                         screen_changed = False
                 except Exception:
                     pass
@@ -314,7 +320,7 @@ def _worker_process_loop(
                     images=[image],
                     padding=True,
                     return_tensors="pt"
-                ).to("cuda")
+                ).to(device)
 
                 with torch.inference_mode():
                     generated_ids = model.generate(
@@ -361,8 +367,8 @@ def _worker_process_loop(
 
             # 5. Выполнение физического действия через Win32 API
             if action.action_type in ("click", "double_click", "right_click") and action.coordinate:
-                norm_y, norm_x = action.coordinate
-                screen_x, screen_y = screen.denormalize_coordinate(norm_y=norm_y, norm_x=norm_x)
+                norm_x, norm_y = action.coordinate
+                screen_x, screen_y = screen.denormalize_coordinate(norm_x=norm_x, norm_y=norm_y)
                 failsafe.update_known_position(screen_x, screen_y)
 
                 status_queue.put({
@@ -400,11 +406,14 @@ def _worker_process_loop(
             "message": final_message or "Достигнут лимит шагов"
         })
 
-    # Выгрузка при остановке
-    del model
-    del processor
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    finally:
+        # Гарантированная выгрузка модели и освобождение VRAM при остановке или сбое
+        if model is not None:
+            del model
+        if processor is not None:
+            del processor
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 class VisionAgentProcessManager:
