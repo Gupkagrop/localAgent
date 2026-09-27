@@ -47,3 +47,18 @@
 - ✅ `vision_model` из `settings.json` — передаётся в `VisionAgentProcessManager`
 
 Проект готов к запуску и тестированию.
+
+---
+
+## Результаты независимого глубокого аудита многопоточности и Win32 (2026-09-27 12:51)
+
+Независимый субагент-аудитор **`code-auditor`** выполнил сквозной аудит параллелизма, синхронизации и Win32 API. Выявлены и немедленно устранены следующие потенциальные скрытые риски:
+
+| ID | Уровень | Файл | Описание проблемы | Статус исправления |
+|---|---|---|---|---|
+| **AUD-001** | 🔴 Критический (P0) | [`core/audio_listener.py`](file:///C:/Users/denis/Documents/antigravity/localAgent/core/audio_listener.py) | При сбое аудиоустройства в блоке `finally:` метода `_run_loop` флаг `_is_running` оставался `True`. Метод `record_command()` бесконечно зависал на ожидании `_record_done_event`. | ✅ **Исправлен:** в `finally:` добавлен сброс `self._is_running = False` и гарантированная активация `self._record_done_event.set()`. |
+| **AUD-002** | 🟡 Важный (P1) | [`core/keyboard_hook.py`](file:///C:/Users/denis/Documents/antigravity/localAgent/core/keyboard_hook.py) | Использование `GetKeyState` внутри низкоуровневого хука `WH_KEYBOARD_LL`. Функция читает очередь сообщений потока и может возвращать устаревший статус физических клавиш-модификаторов (`Win`, `Shift`, `Ctrl`). | ✅ **Исправлен:** `GetKeyState` заменен на прямой опрос физического состояния клавиатуры `GetAsyncKeyState(...) & 0x8000`. |
+| **AUD-003** | 🟡 Важный (P1) | [`core/app_controller.py`](file:///C:/Users/denis/Documents/antigravity/localAgent/core/app_controller.py), [`core/executor.py`](file:///C:/Users/denis/Documents/antigravity/localAgent/core/executor.py), [`core/screen_tools.py`](file:///C:/Users/denis/Documents/antigravity/localAgent/core/screen_tools.py) | Синхронный вызов `OpenClipboard()` без повторных попыток мог вызывать исключение `pywintypes.error`, если буфер кратковременно занят другим процессом (история `Win+V`). | ✅ **Исправлен:** открытие буфера обмена обернуто в безопасный цикл с 5 повторными попытками и задержкой 50 мс. |
+
+**Итог:** Все модульные тесты (81/81) и комплексная верификация `full_verification.py` пройдены на 100% OK.
+
