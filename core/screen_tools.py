@@ -267,7 +267,8 @@ class ScreenController:
         # 1. Захват экрана через mss (быстрый в изолированном Worker)
         try:
             import mss
-            with mss.mss() as sct:
+            mss_factory = getattr(mss, "MSS", getattr(mss, "mss", None))
+            with mss_factory() as sct:
                 left, top, width, height = self._current_monitor
                 target_mon = None
                 for mon in sct.monitors[1:]:
