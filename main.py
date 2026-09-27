@@ -87,7 +87,11 @@ class AppCoordinator(QObject):
 
         # Фоновый запуск Vision-агента в режиме Always-Warm при наличии модели
         if self.decision_engine.is_llm_available():
+            self.window.set_llm_status("loading")
+            self.log("🤖 Запуск фонового процесса Vision-агента и загрузка весов Jedi-3B в GPU (VRAM)...")
             self.vision_manager.start()
+        else:
+            self.window.set_llm_status("not_installed")
 
         # Таймер опроса очереди событий Vision-агента (каждые 120 мс)
         self._vision_timer = QTimer(self)
@@ -98,10 +102,9 @@ class AppCoordinator(QObject):
         # 3. Подключение сигналов
         self._connect_signals()
 
-        # 4. Применяем настройки микрофона и LLM
+        # 4. Применяем настройки микрофона
         devices = self.listener.get_input_devices()
         self.window.set_microphones(devices)
-        self.window.set_llm_status(self.decision_engine.is_llm_available())
         self.listener.start_stream()
 
         # 5. Запуск низкоуровневого перехватчика Copilot
@@ -622,7 +625,12 @@ class AppCoordinator(QObject):
                     self.tray_state_signal.emit("idle")
 
             if ev_type == "ready":
-                self.log("✓ Vision Computer-Use Agent (Jedi-3B) готов к работе в фоновом процессе.")
+                self.window.set_llm_status("ready")
+                self.log("✓ Vision-модель Jedi-3B успешно загружена в GPU и готова к выполнению задач.")
+            elif ev_type == "log":
+                msg = ev.get("message", "")
+                if msg:
+                    self.log(f"🤖 [Vision] {msg}")
             elif ev_type == "task_started":
                 self.pill.show_step(1, max_steps, "Анализирую экран...")
                 self.log(f"Vision-агент начал выполнение: «{ev.get('prompt', '')}»")
@@ -678,6 +686,7 @@ class AppCoordinator(QObject):
                     self.log(f"⚠ Задача не завершена: {message}")
                     self._play_sound("error")
             elif ev_type == "error":
+                self.window.set_llm_status("error")
                 err = ev.get("message", "Ошибка агента")
                 self.pill.show_error("Ошибка агента")
                 self.log(f"❌ Ошибка Vision-агента: {err}")
@@ -759,7 +768,7 @@ class AppCoordinator(QObject):
                 if is_vision:
                     # Для асинхронного Vision-агента ход выполнения отслеживается таймером _poll_vision_agent
                     if success:
-                        self.pill_executing_signal.emit("Анализирую экран...")
+                        self.pill_executing_signal.emit(msg or "Анализирую экран...")
                     else:
                         self._play_sound("error")
                         self.pill_error_signal.emit(msg)
@@ -807,7 +816,7 @@ class AppCoordinator(QObject):
 
         if is_vision:
             if success:
-                self.pill_executing_signal.emit("Анализирую экран...")
+                self.pill_executing_signal.emit(msg or "Анализирую экран...")
             else:
                 self._play_sound("error")
                 self.pill_error_signal.emit(msg)
@@ -850,4 +859,6 @@ def main():
     sys.exit(app.exec())
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
     main()

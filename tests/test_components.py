@@ -228,6 +228,7 @@ class TestCoreModules(unittest.TestCase):
         from unittest.mock import MagicMock
         mock_vm = MagicMock()
         mock_vm.is_running.return_value = True
+        mock_vm.is_loading.return_value = False
         mock_vm.execute_task.return_value = True
 
         executor = CommandExecutor(vision_manager=mock_vm)

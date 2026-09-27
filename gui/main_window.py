@@ -7,7 +7,7 @@
 import os
 import json
 import winreg
-from typing import Optional
+from typing import Optional, Union
 
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtWidgets import (
@@ -611,12 +611,28 @@ class MainWindow(QMainWindow):
                 cur_name = cur_name[:20] + "..."
             self.card_mic.status_label.setText(cur_name)
 
-    def set_llm_status(self, is_installed: bool):
-        if is_installed:
-            self.card_ai.status_label.setText("Jedi-3B (Always-Warm)")
+    def set_llm_status(self, status: Union[str, bool]) -> None:
+        """Обновляет визуальный статус Vision-модели в карточке и кнопке управления."""
+        if isinstance(status, bool):
+            status_key = "ready" if status else "not_installed"
+        else:
+            status_key = str(status).lower().strip()
+
+        if status_key == "loading":
+            self.card_ai.status_label.setText("Загрузка в GPU...")
+            self.card_ai.status_label.setStyleSheet("color: #F59E0B;")
+            self.btn_download_llm.setText("⏳ Загрузка в VRAM...")
+            self.btn_download_llm.setEnabled(False)
+        elif status_key == "ready":
+            self.card_ai.status_label.setText("Jedi-3B (Готова / Warm)")
             self.card_ai.status_label.setStyleSheet("color: #34D399;")
             self.btn_download_llm.setText("✓ Jedi-3B (1080p) готова")
             self.btn_download_llm.setEnabled(False)
+        elif status_key == "error":
+            self.card_ai.status_label.setText("Ошибка загрузки")
+            self.card_ai.status_label.setStyleSheet("color: #EF4444;")
+            self.btn_download_llm.setText("⚠ Ошибка Vision-модели")
+            self.btn_download_llm.setEnabled(True)
         else:
             self.card_ai.status_label.setText("Fast-Path (0 мс, 0 МБ)")
             self.card_ai.status_label.setStyleSheet("color: #60A5FA;")

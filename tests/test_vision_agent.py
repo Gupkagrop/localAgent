@@ -2,8 +2,13 @@
 Модульные тесты для парсера действий и контроллера Vision-агента (core/vision_agent.py).
 """
 
+import os
+import sys
 import unittest
+from unittest.mock import MagicMock, patch
+
 from core.vision_agent import ActionParser, FailSafeMonitor, VisionAction, VisionAgentProcessManager
+from gui.main_window import MainWindow
 
 
 class TestVisionAgentParser(unittest.TestCase):
@@ -95,6 +100,24 @@ class TestVisionAgentParser(unittest.TestCase):
         self.assertEqual(act.action_type, "finish")
         self.assertIn("Не удалось распознать JSON", act.thought)
 
+    def test_parse_alias_normalization(self) -> None:
+        """Нормализация синонимов и алиасов действий модели в ActionParser."""
+        # left_click -> click
+        act_click = ActionParser.parse('{"thought": "Клик", "action": "left_click", "coordinate": [100, 200]}')
+        self.assertEqual(act_click.action_type, "click")
+
+        # right-click -> right_click
+        act_right = ActionParser.parse('{"thought": "Контекстное меню", "action": "right-click", "coordinate": [200, 300]}')
+        self.assertEqual(act_right.action_type, "right_click")
+
+        # write -> type
+        act_write = ActionParser.parse('{"thought": "Ввод текста", "action": "write", "text": "тестовая строка"}')
+        self.assertEqual(act_write.action_type, "type")
+
+        # done -> finish
+        act_done = ActionParser.parse('{"thought": "Завершение", "action": "done", "message": "задача выполнена"}')
+        self.assertEqual(act_done.action_type, "finish")
+
 
 class TestFailSafeMonitor(unittest.TestCase):
     """Тестирование экстренного прерывания действий."""
@@ -132,13 +155,81 @@ class TestProcessManager(unittest.TestCase):
         mgr = VisionAgentProcessManager(fallback_model="custom/fallback")
         self.assertEqual(mgr.fallback_model, "custom/fallback")
 
+    @patch("core.vision_agent.mp.Process")
+    def test_manager_is_loading(self, mock_process_cls) -> None:
+        """Проверка метода is_loading() (при старте True, при ready False, при stop False)."""
+        mock_proc = MagicMock()
+        mock_proc.is_alive.return_value = True
+        mock_process_cls.return_value = mock_proc
+
+        mgr = VisionAgentProcessManager()
+        # До старта: процесс не запущен
+        self.assertFalse(mgr.is_loading())
+
+        # 1. При старте: процесс запущен, веса модели еще не готовы
+        mgr.start()
+        self.assertTrue(mgr.is_running())
+        self.assertTrue(mgr.is_loading())
+
+        # 2. При ready: модель загружена в GPU
+        mgr._is_ready = True
+        self.assertFalse(mgr.is_loading())
+        self.assertTrue(mgr.is_ready())
+
+        # 3. При stop: процесс остановлен
+        mock_proc.is_alive.return_value = False
+        mgr.stop()
+        self.assertFalse(mgr.is_loading())
+        self.assertFalse(mgr.is_running())
+
+
+class TestMainWindowStatus(unittest.TestCase):
+    """Тестирование метода set_llm_status в MainWindow для состояний 'loading', 'ready', 'error', 'not_installed'."""
+
+    @classmethod
+    def setUpClass(cls):
+        from PyQt6.QtWidgets import QApplication
+        cls.app = QApplication.instance() or QApplication(sys.argv)
+
+    def test_set_llm_status(self) -> None:
+        """Проверка установки статусов 'loading', 'ready', 'error', 'not_installed'."""
+        config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "settings.json")
+        window = MainWindow(config_path)
+
+        # 1. Состояние 'loading'
+        window.set_llm_status("loading")
+        self.assertEqual(window.card_ai.status_label.text(), "Загрузка в GPU...")
+        self.assertIn("#F59E0B", window.card_ai.status_label.styleSheet())
+        self.assertEqual(window.btn_download_llm.text(), "⏳ Загрузка в VRAM...")
+        self.assertFalse(window.btn_download_llm.isEnabled())
+
+        # 2. Состояние 'ready'
+        window.set_llm_status("ready")
+        self.assertEqual(window.card_ai.status_label.text(), "Jedi-3B (Готова / Warm)")
+        self.assertIn("#34D399", window.card_ai.status_label.styleSheet())
+        self.assertEqual(window.btn_download_llm.text(), "✓ Jedi-3B (1080p) готова")
+        self.assertFalse(window.btn_download_llm.isEnabled())
+
+        # 3. Состояние 'error'
+        window.set_llm_status("error")
+        self.assertEqual(window.card_ai.status_label.text(), "Ошибка загрузки")
+        self.assertIn("#EF4444", window.card_ai.status_label.styleSheet())
+        self.assertEqual(window.btn_download_llm.text(), "⚠ Ошибка Vision-модели")
+        self.assertTrue(window.btn_download_llm.isEnabled())
+
+        # 4. Состояние 'not_installed'
+        window.set_llm_status("not_installed")
+        self.assertEqual(window.card_ai.status_label.text(), "Fast-Path (0 мс, 0 МБ)")
+        self.assertIn("#60A5FA", window.card_ai.status_label.styleSheet())
+        self.assertEqual(window.btn_download_llm.text(), "📥 Скачать Jedi-3B (1080p)")
+        self.assertTrue(window.btn_download_llm.isEnabled())
+
 
 class TestTorchIsolation(unittest.TestCase):
     """Тестирование архитектурной изоляции PyTorch от основного процесса."""
 
     def test_torch_not_in_sys_modules(self) -> None:
         """PyTorch не должен импортироваться в адресное пространство основного процесса."""
-        import sys
         # Основной процесс UI и Fast-Path не должен зависеть от тяжелого Torch runtime
         self.assertNotIn(
             "torch",

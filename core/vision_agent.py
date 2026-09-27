@@ -8,9 +8,11 @@ import ctypes
 import json
 import multiprocessing as mp
 import os
+import queue
 import re
 import sys
 import time
+import traceback
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from PIL import Image
@@ -102,6 +104,25 @@ class ActionParser:
 
         thought = str(data.get("thought", ""))
         action_type = str(data.get("action", "wait")).lower().strip()
+        alias_map = {
+            "left_click": "click",
+            "leftclick": "click",
+            "left-click": "click",
+            "single_click": "click",
+            "rightclick": "right_click",
+            "right-click": "right_click",
+            "doubleclick": "double_click",
+            "double-click": "double_click",
+            "write": "type",
+            "input": "type",
+            "input_text": "type",
+            "done": "finish",
+            "complete": "finish",
+            "completed": "finish",
+            "terminate": "finish",
+            "exit": "finish",
+        }
+        action_type = alias_map.get(action_type, action_type)
         message = str(data.get("message", ""))
         text = str(data.get("text", ""))
         press_enter = bool(data.get("press_enter", False))
@@ -184,260 +205,275 @@ def _worker_process_loop(
     Основной цикл изолированного рабочего процесса Vision-агента.
     Выполняется в отдельном адресном пространстве процесса Windows.
     """
-    import torch
-    from transformers import AutoProcessor, BitsAndBytesConfig, Qwen2_5_VLForConditionalGeneration
-    from core.screen_tools import ScreenController
-
-    screen = ScreenController()
-    failsafe = FailSafeMonitor()
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    # 4-битная квантизация BitsAndBytes NF4 (доступна только при наличии CUDA)
-    quant_config = (
-        BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True
-        )
-        if torch.cuda.is_available()
-        else None
-    )
-
-    model = None
-    processor = None
-    candidates = [model_name]
-    if fallback_model and fallback_model != model_name:
-        candidates.append(fallback_model)
-
-    for candidate in candidates:
-        status_queue.put({"type": "log", "message": f"Загрузка модели {candidate} в 4-битном режиме (NF4)..."})
-        try:
-            try:
-                model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                    candidate,
-                    quantization_config=quant_config,
-                    device_map="auto",
-                    torch_dtype=torch.float16,
-                    low_cpu_mem_usage=True,
-                    local_files_only=True
-                )
-                processor = AutoProcessor.from_pretrained(candidate, local_files_only=True)
-            except Exception:
-                model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                    candidate,
-                    quantization_config=quant_config,
-                    device_map="auto",
-                    torch_dtype=torch.float16,
-                    low_cpu_mem_usage=True
-                )
-                processor = AutoProcessor.from_pretrained(candidate)
-            status_queue.put({"type": "ready", "message": f"Vision-модель {candidate} готова к работе"})
-            break
-        except Exception as e:
-            status_queue.put({"type": "log", "message": f"Не удалось загрузить {candidate}: {e}"})
-
-    if model is None or processor is None:
-        status_queue.put({"type": "error", "message": "Ошибка: не удалось загрузить ни основную, ни резервную модель"})
-        return
-
     try:
-        while not stop_event.is_set():
+        import torch
+        from transformers import AutoProcessor, BitsAndBytesConfig, Qwen2_5_VLForConditionalGeneration
+        from core.screen_tools import ScreenController
+
+        screen = ScreenController()
+        failsafe = FailSafeMonitor()
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        # 4-битная квантизация BitsAndBytes NF4 (доступна только при наличии CUDA)
+        quant_config = (
+            BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True
+            )
+            if torch.cuda.is_available()
+            else None
+        )
+
+        model = None
+        processor = None
+        candidates = [model_name]
+        if fallback_model and fallback_model != model_name:
+            candidates.append(fallback_model)
+
+        for candidate in candidates:
+            status_queue.put({"type": "log", "message": f"Загрузка модели {candidate} в 4-битном режиме (NF4)..."})
             try:
-                task = task_queue.get(timeout=0.5)
-            except Exception:
-                continue
-
-            if task.get("type") == "stop":
-                break
-
-            if task.get("type") != "execute":
-                continue
-
-            if cancel_event is not None:
-                cancel_event.clear()
-
-            prompt = task.get("prompt", "")
-            max_steps = task.get("max_steps", 8)
-            history: List[str] = []
-            prev_image: Optional[Image.Image] = None
-
-            status_queue.put({"type": "task_started", "prompt": prompt})
-
-            task_success = False
-            final_message = ""
-            was_interrupted = False
-
-            for step in range(1, max_steps + 1):
-                if stop_event.is_set():
-                    final_message = "Задача остановлена"
-                    was_interrupted = True
-                    break
-
-                if cancel_event is not None and cancel_event.is_set():
-                    status_queue.put({"type": "interrupted", "reason": "Задача отменена пользователем"})
-                    final_message = "Задача отменена пользователем"
-                    was_interrupted = True
-                    break
-
-                # 1. Проверка прерывания
-                interrupted, reason = failsafe.is_interrupted()
-                if interrupted:
-                    status_queue.put({"type": "interrupted", "reason": reason})
-                    final_message = reason
-                    was_interrupted = True
-                    break
-
-                # 2. Захват экрана
-                status_queue.put({"type": "step_status", "step": step, "status": "Захват экрана..."})
-                image = screen.capture_screen()
-
-                # Детекция изменений экрана после предыдущего действия
-                screen_changed = True
-                if prev_image is not None and prev_image.size == image.size:
-                    try:
-                        p1 = prev_image.resize((64, 64), Image.Resampling.NEAREST).convert("L")
-                        p2 = image.resize((64, 64), Image.Resampling.NEAREST).convert("L")
-                        diff = sum(abs(a - b) for a, b in zip(p1.getdata(), p2.getdata()))
-                        avg_diff = diff / (64 * 64)
-                        if avg_diff < 1.5:  # Среднее изменение яркости пикселей менее 1.5 из 255 (~0.6% от максимума)
-                            screen_changed = False
-                    except Exception:
-                        pass
-
-                prev_image = image
-
-                # Ресайз под динамическую сетку (кратно 28x28)
-                img_w, img_h = image.size
-                target_w = (img_w // 28) * 28
-                target_h = (img_h // 28) * 28
-                if target_w != img_w or target_h != img_h:
-                    image = image.resize((target_w, target_h), Image.Resampling.LANCZOS)
-
-                # 3. Формирование контекста и вывод модели
-                status_queue.put({"type": "step_status", "step": step, "status": "Анализ интерфейса нейросетью..."})
-
-                history_str = "\n".join(f"Шаг {i+1}: {h}" for i, h in enumerate(history[-3:]))
-                user_content = f"Цель пользователя: {prompt}\n"
-                if history_str:
-                    user_content += f"Предыдущие выполненные действия:\n{history_str}\n"
-                if not screen_changed and step > 1:
-                    user_content += "Внимание: после предыдущего шага экран не изменился. Элемент мог не сработать или быть перекрыт всплывающим окном/баннером. Закрой помеху или повтори действие точнее.\n"
-                user_content += "Определи следующее действие в формате JSON."
-
-                messages = [
-                    {"role": "system", "content": COMPUTER_USE_SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image", "image": image},
-                            {"type": "text", "text": user_content}
-                        ]
-                    }
-                ]
-
                 try:
-                    text_input = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-                    inputs = processor(
-                        text=[text_input],
-                        images=[image],
-                        padding=True,
-                        return_tensors="pt"
-                    ).to(device)
+                    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                        candidate,
+                        quantization_config=quant_config,
+                        device_map="auto",
+                        torch_dtype=torch.float16,
+                        low_cpu_mem_usage=True,
+                        local_files_only=True
+                    )
+                    processor = AutoProcessor.from_pretrained(candidate, local_files_only=True)
+                except Exception:
+                    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                        candidate,
+                        quantization_config=quant_config,
+                        device_map="auto",
+                        torch_dtype=torch.float16,
+                        low_cpu_mem_usage=True
+                    )
+                    processor = AutoProcessor.from_pretrained(candidate)
+                status_queue.put({"type": "ready", "message": f"Vision-модель {candidate} готова к работе"})
+                break
+            except Exception as e:
+                status_queue.put({"type": "log", "message": f"Не удалось загрузить {candidate}: {e}"})
 
-                    with torch.inference_mode():
-                        generated_ids = model.generate(
-                            **inputs,
-                            max_new_tokens=256,
-                            do_sample=False
-                        )
+        if model is None or processor is None:
+            status_queue.put({"type": "error", "message": "Ошибка: не удалось загрузить ни основную, ни резервную модель"})
+            return
 
-                    generated_ids_trimmed = [
-                        out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        try:
+            while not stop_event.is_set():
+                try:
+                    task = task_queue.get(timeout=0.5)
+                except Exception:
+                    continue
+
+                if task.get("type") == "stop":
+                    break
+
+                if task.get("type") != "execute":
+                    continue
+
+                if cancel_event is not None:
+                    cancel_event.clear()
+
+                prompt = task.get("prompt", "")
+                max_steps = task.get("max_steps", 8)
+                history: List[str] = []
+                prev_image: Optional[Image.Image] = None
+
+                status_queue.put({"type": "task_started", "prompt": prompt})
+
+                task_success = False
+                final_message = ""
+                was_interrupted = False
+
+                for step in range(1, max_steps + 1):
+                    if stop_event.is_set():
+                        final_message = "Задача остановлена"
+                        was_interrupted = True
+                        break
+
+                    if cancel_event is not None and cancel_event.is_set():
+                        status_queue.put({"type": "interrupted", "reason": "Задача отменена пользователем"})
+                        final_message = "Задача отменена пользователем"
+                        was_interrupted = True
+                        break
+
+                    # 1. Проверка прерывания
+                    interrupted, reason = failsafe.is_interrupted()
+                    if interrupted:
+                        status_queue.put({"type": "interrupted", "reason": reason})
+                        final_message = reason
+                        was_interrupted = True
+                        break
+
+                    # 2. Захват экрана
+                    status_queue.put({"type": "step_status", "step": step, "status": "Захват экрана..."})
+                    image = screen.capture_screen()
+
+                    # Детекция изменений экрана после предыдущего действия
+                    screen_changed = True
+                    if prev_image is not None and prev_image.size == image.size:
+                        try:
+                            p1 = prev_image.resize((64, 64), Image.Resampling.NEAREST).convert("L")
+                            p2 = image.resize((64, 64), Image.Resampling.NEAREST).convert("L")
+                            diff = sum(abs(a - b) for a, b in zip(p1.getdata(), p2.getdata()))
+                            avg_diff = diff / (64 * 64)
+                            if avg_diff < 1.5:  # Среднее изменение яркости пикселей менее 1.5 из 255 (~0.6% от максимума)
+                                screen_changed = False
+                        except Exception:
+                            pass
+
+                    prev_image = image
+
+                    # Ресайз под динамическую сетку (кратно 28x28)
+                    img_w, img_h = image.size
+                    target_w = (img_w // 28) * 28
+                    target_h = (img_h // 28) * 28
+                    if target_w != img_w or target_h != img_h:
+                        image = image.resize((target_w, target_h), Image.Resampling.LANCZOS)
+
+                    # 3. Формирование контекста и вывод модели
+                    status_queue.put({"type": "step_status", "step": step, "status": "Анализ интерфейса нейросетью..."})
+
+                    history_str = "\n".join(f"Шаг {i+1}: {h}" for i, h in enumerate(history[-3:]))
+                    user_content = f"Цель пользователя: {prompt}\n"
+                    if history_str:
+                        user_content += f"Предыдущие выполненные действия:\n{history_str}\n"
+                    if not screen_changed and step > 1:
+                        user_content += "Внимание: после предыдущего шага экран не изменился. Элемент мог не сработать или быть перекрыт всплывающим окном/баннером. Закрой помеху или повтори действие точнее.\n"
+                    user_content += "Определи следующее действие в формате JSON."
+
+                    messages = [
+                        {"role": "system", "content": COMPUTER_USE_SYSTEM_PROMPT},
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image", "image": image},
+                                {"type": "text", "text": user_content}
+                            ]
+                        }
                     ]
-                    output_text = processor.batch_decode(
-                        generated_ids_trimmed,
-                        skip_special_tokens=True,
-                        clean_up_tokenization_spaces=False
-                    )[0]
-                except Exception as e:
-                    status_queue.put({"type": "error", "message": f"Ошибка генерации модели: {e}"})
-                    final_message = f"Ошибка инференса: {e}"
-                    break
 
-                action = ActionParser.parse(output_text)
-                history.append(f"{action.action_type}: {action.thought}")
+                    try:
+                        text_input = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                        inputs = processor(
+                            text=[text_input],
+                            images=[image],
+                            padding=True,
+                            return_tensors="pt"
+                        ).to(device)
 
-                status_queue.put({
-                    "type": "action_decided",
-                    "step": step,
-                    "thought": action.thought,
-                    "action": action.action_type,
-                    "coordinate": action.coordinate,
-                    "message": action.message
-                })
+                        with torch.inference_mode():
+                            generated_ids = model.generate(
+                                **inputs,
+                                max_new_tokens=256,
+                                do_sample=False
+                            )
 
-                # 4. Обработка завершения или подтверждения
-                if action.action_type == "finish":
-                    task_success = True
-                    final_message = action.message or "Задача успешно выполнена"
-                    break
+                        generated_ids_trimmed = [
+                            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+                        ]
+                        output_text = processor.batch_decode(
+                            generated_ids_trimmed,
+                            skip_special_tokens=True,
+                            clean_up_tokenization_spaces=False
+                        )[0]
+                    except Exception as e:
+                        status_queue.put({"type": "error", "message": f"Ошибка генерации модели: {e}"})
+                        final_message = f"Ошибка инференса: {e}"
+                        break
 
-                if action.action_type == "ask_confirmation":
-                    status_queue.put({"type": "confirmation_requested", "message": action.message})
-                    final_message = f"Требуется подтверждение: {action.message}"
-                    break
-
-                # 5. Выполнение физического действия через Win32 API
-                if action.action_type in ("click", "double_click", "right_click") and action.coordinate:
-                    norm_x, norm_y = action.coordinate
-                    screen_x, screen_y = screen.denormalize_coordinate(norm_x=norm_x, norm_y=norm_y)
-                    failsafe.update_known_position(screen_x, screen_y)
+                    action = ActionParser.parse(output_text)
+                    history.append(f"{action.action_type}: {action.thought}")
 
                     status_queue.put({
-                        "type": "click_performed",
-                        "x": screen_x,
-                        "y": screen_y,
-                        "button": action.action_type
+                        "type": "action_decided",
+                        "step": step,
+                        "thought": action.thought,
+                        "action": action.action_type,
+                        "coordinate": action.coordinate,
+                        "message": action.message
                     })
 
-                    if action.action_type == "click":
-                        screen.click(screen_x, screen_y)
-                    elif action.action_type == "double_click":
-                        screen.double_click(screen_x, screen_y)
-                    elif action.action_type == "right_click":
-                        screen.click(screen_x, screen_y, button="right")
+                    # 4. Обработка завершения или подтверждения
+                    if action.action_type == "finish":
+                        task_success = True
+                        final_message = action.message or "Задача успешно выполнена"
+                        break
 
-                elif action.action_type == "type":
-                    screen.type_text(action.text, press_enter=action.press_enter)
+                    if action.action_type == "ask_confirmation":
+                        status_queue.put({"type": "confirmation_requested", "message": action.message})
+                        final_message = f"Требуется подтверждение: {action.message}"
+                        break
 
-                elif action.action_type == "press" and action.key:
-                    screen.send_key(action.key)
+                    # 5. Выполнение физического действия через Win32 API
+                    if action.action_type in ("click", "double_click", "right_click") and action.coordinate:
+                        norm_x, norm_y = action.coordinate
+                        screen_x, screen_y = screen.denormalize_coordinate(norm_x=norm_x, norm_y=norm_y)
+                        failsafe.update_known_position(screen_x, screen_y)
 
-                elif action.action_type == "hotkey" and action.keys:
-                    screen.hotkey(action.keys)
+                        status_queue.put({
+                            "type": "click_performed",
+                            "x": screen_x,
+                            "y": screen_y,
+                            "button": action.action_type
+                        })
 
-                elif action.action_type == "scroll":
-                    screen.scroll(direction=action.direction, amount=3)
+                        if action.action_type == "click":
+                            screen.click(screen_x, screen_y)
+                        elif action.action_type == "double_click":
+                            screen.double_click(screen_x, screen_y)
+                        elif action.action_type == "right_click":
+                            screen.click(screen_x, screen_y, button="right")
 
-                # Короткая пауза для отрисовки интерфейса Windows
-                time.sleep(0.3)
+                    elif action.action_type == "type":
+                        screen.type_text(action.text, press_enter=action.press_enter)
 
-            if not was_interrupted:
-                status_queue.put({
-                    "type": "task_completed",
-                    "success": task_success,
-                    "message": final_message or "Достигнут лимит шагов"
-                })
+                    elif action.action_type == "press" and action.key:
+                        screen.send_key(action.key)
 
-    finally:
-        # Гарантированная выгрузка модели и освобождение VRAM при остановке или сбое
-        if model is not None:
-            del model
-        if processor is not None:
-            del processor
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+                    elif action.action_type == "hotkey" and action.keys:
+                        screen.hotkey(action.keys)
+
+                    elif action.action_type == "scroll":
+                        screen.scroll(direction=action.direction, amount=3)
+
+                    # Короткая пауза для отрисовки интерфейса Windows
+                    time.sleep(0.3)
+
+                if not was_interrupted:
+                    status_queue.put({
+                        "type": "task_completed",
+                        "success": task_success,
+                        "message": final_message or "Достигнут лимит шагов"
+                    })
+
+        finally:
+            # Гарантированная выгрузка модели и освобождение VRAM при остановке или сбое
+            if model is not None:
+                del model
+            if processor is not None:
+                del processor
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    except Exception as e:
+        tb = traceback.format_exc()
+        try:
+            log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+            os.makedirs(log_dir, exist_ok=True)
+            with open(os.path.join(log_dir, "vision_worker.log"), "a", encoding="utf-8") as f:
+                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Сбой воркера Vision-агента: {e}\n{tb}\n")
+        except Exception:
+            pass
+        try:
+            status_queue.put_nowait({"type": "error", "message": f"Сбой воркера Vision-агента: {e}"})
+        except Exception:
+            pass
 
 
 class VisionAgentProcessManager:
@@ -467,6 +503,10 @@ class VisionAgentProcessManager:
     def is_ready(self) -> bool:
         """Готова ли модель к инференсу."""
         return self.is_running() and self._is_ready
+
+    def is_loading(self) -> bool:
+        """Загружается ли модель в память GPU в данный момент."""
+        return self.is_running() and not self._is_ready
 
     def is_busy(self) -> bool:
         """Выполняет ли агент задачу в интерфейсе в данный момент."""

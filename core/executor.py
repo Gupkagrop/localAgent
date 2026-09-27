@@ -291,11 +291,15 @@ class CommandExecutor:
             self.log("Инициализация и запуск фонового процесса Vision-агента...")
             self.vision_manager.start()
 
+        is_warming_up = self.vision_manager.is_loading()
+        if is_warming_up:
+            self.log("⏳ Vision-модель загружается в видеопамять (VRAM). Задача поставлена в очередь и запустится автоматически...")
+
         max_steps = int(params.get("max_steps", 8))
         self.log(f"Задача передана автономному Vision-агенту (до {max_steps} шагов): «{prompt}»")
         ok = self.vision_manager.execute_task(prompt, max_steps=max_steps)
         if ok:
-            return True, "Анализирую экран..."
+            return True, ("Загрузка модели в GPU..." if is_warming_up else "Анализирую экран...")
         return False, "Не удалось запустить выполнение задачи Vision-агентом"
 
     def _handle_antigravity_gui(self, target: str, params: dict) -> tuple[bool, str]:
