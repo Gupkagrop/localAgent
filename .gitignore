@@ -90,7 +90,10 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
-# 9. Markdown файлы (все внутренние инструкции агентов исключаются из Git, кроме README.md)
-*.md
-!README.md
+# 9. Артефакты и кэши ИИ-агентов
+.gemini/
+.brain/
+scratch/
+repomix-output.txt
+
 
