@@ -90,127 +90,6 @@ README.md
 <files>
 This section contains the contents of the repository's files.
 
-<file path="tests/test_audio_listener.py">
-"""
-Модульные тесты для звукового контура AudioListener.
-Проверяют расчет RMS, логику VAD, пороги фильтрации шума для Wake Word и изоляцию от физических аудиоустройств.
-"""
-import unittest
-from unittest.mock import MagicMock, patch
-import numpy as np
-
-from core.audio_listener import AudioListener, SAMPLE_RATE, CHUNK_SIZE
-
-
-class TestAudioListener(unittest.TestCase):
-    def setUp(self):
-        self.vu_mock = MagicMock()
-        self.listener = AudioListener(on_vu_meter=self.vu_mock)
-
-    def test_initial_state(self):
-        """Проверка начальных параметров и флагов слушателя."""
-        self.assertEqual(self.listener._mode, "idle")
-        self.assertTrue(self.listener.wake_word_enabled)
-        self.assertEqual(self.listener.speech_energy_threshold, 0.002)
-        self.assertEqual(self.listener.silence_threshold_ms, 400)
-
-    def test_rms_calculation_silence(self):
-        """Проверка расчета RMS для абсолютной тишины."""
-        silence = np.zeros(CHUNK_SIZE, dtype=np.float32)
-        rms = float(np.sqrt(np.mean(silence ** 2)))
-        self.assertEqual(rms, 0.0)
-
-    def test_rms_calculation_sine_wave(self):
-        """Проверка расчета RMS для тестового синусоидального сигнала."""
-        t = np.linspace(0, 1, CHUNK_SIZE, endpoint=False)
-        sine = (np.sin(2 * np.pi * 440 * t) * 0.5).astype(np.float32)
-        rms = float(np.sqrt(np.mean(sine ** 2)))
-        # Для синусоиды амплитудой A RMS равен A / sqrt(2) ≈ 0.5 / 1.4142 ≈ 0.3535
-        self.assertAlmostEqual(rms, 0.3535, places=2)
-        self.assertGreater(rms, self.listener.speech_energy_threshold)
-
-    def test_wake_word_disabled_skips_processing(self):
-        """Если wake_word_enabled=False, обработка Wake Word не выполняется."""
-        self.listener.wake_word_enabled = False
-        chunk = np.ones(CHUNK_SIZE, dtype=np.float32) * 0.1
-        self.listener._process_wake_word(chunk, rms=0.1)
-
-        self.assertFalse(self.listener._wake_speech_active)
-        self.assertEqual(len(self.listener._wake_buffer), 0)
-        self.assertEqual(len(self.listener._wake_pre_buffer), 0)
-
-    def test_wake_word_short_noise_filtered_out(self):
-        """Короткий шум (< 0.50 с) отбрасывается без запуска STT."""
-        with patch.object(self.listener, "_async_check_wake_word") as mock_check:
-            # Симулируем 0.20 секунды речи (меньше минимального порога 0.50 с)
-            chunks_count = int(SAMPLE_RATE * 0.20 / CHUNK_SIZE)
-            chunk = np.ones(CHUNK_SIZE, dtype=np.float32) * 0.05
-
-            for _ in range(chunks_count):
-                self.listener._process_wake_word(chunk, rms=0.05)
-
-            # Симулируем окончание фразы и тишину 350 мс
-            silence_chunk = np.zeros(CHUNK_SIZE, dtype=np.float32)
-            self.listener._wake_silence_start = 100.0
-            with patch("time.time", return_value=100.4):  # прошло 400 мс тишины
-                self.listener._process_wake_word(silence_chunk, rms=0.0)
-
-            # STT не должен вызываться для короткого щелчка или шума
-            mock_check.assert_not_called()
-            self.assertFalse(self.listener._wake_speech_active)
-            self.assertEqual(len(self.listener._wake_buffer), 0)
-
-    def test_wake_word_sufficient_phrase_triggers_check(self):
-        """Речь длительностью >= 0.50 с после тишины отправляется на проверку слова-триггера."""
-        with patch.object(self.listener, "_async_check_wake_word") as mock_check:
-            # Симулируем 0.60 секунды речи (превышает порог 0.50 с)
-            chunks_count = int(SAMPLE_RATE * 0.60 / CHUNK_SIZE)
-            chunk = np.ones(CHUNK_SIZE, dtype=np.float32) * 0.05
-
-            for _ in range(chunks_count):
-                self.listener._process_wake_word(chunk, rms=0.05)
-
-            self.assertTrue(self.listener._wake_speech_active)
-
-            # Симулируем тишину более 320 мс
-            silence_chunk = np.zeros(CHUNK_SIZE, dtype=np.float32)
-            self.listener._wake_silence_start = 100.0
-            with patch("time.time", return_value=100.4):
-                self.listener._process_wake_word(silence_chunk, rms=0.0)
-
-            mock_check.assert_called_once()
-            self.assertFalse(self.listener._wake_speech_active)
-
-    def test_stop_wake_word_loop_resets_mode(self):
-        """Метод stop_wake_word_loop сбрасывает режим в idle."""
-        self.listener._mode = "wake_listen"
-        self.listener.stop_wake_word_loop()
-        self.assertEqual(self.listener._mode, "idle")
-
-    def test_get_input_devices_mocked(self):
-        """Проверка получения списка микрофонов с фильтрацией системных устройств."""
-        mock_devices = [
-            {"name": "Встроенный микрофон Realtek", "max_input_channels": 2, "hostapi": 0},
-            {"name": "Динамики Realtek", "max_input_channels": 0, "hostapi": 0},
-            {"name": "USB Наушники Микрофон", "max_input_channels": 1, "hostapi": 0}
-        ]
-        with patch("sounddevice.query_devices", return_value=mock_devices):
-            devices = AudioListener.get_input_devices()
-            self.assertEqual(len(devices), 2)
-            self.assertEqual(devices[0]["name"], "Встроенный микрофон Realtek")
-            self.assertEqual(devices[1]["name"], "USB Наушники Микрофон")
-
-    def test_get_input_devices_exception_handled(self):
-        """При исключении в sounddevice возвращается пустой список без падения."""
-        with patch("sounddevice.query_devices", side_effect=Exception("PortAudio error")):
-            devices = AudioListener.get_input_devices()
-            self.assertEqual(devices, [])
-
-
-if __name__ == "__main__":
-    unittest.main()
-</file>
-
 <file path="docs/architecture/api.md">
 > [!NOTE]
 > **Назначение документа:** Спецификация межпроцессных контрактов (IPC), очередей сообщений и семантического маршрутизатора DecisionEngine. Документ регламентирует протокол взаимодействия между главным GUI-процессом и изолированным воркером компьютерного зрения.
@@ -486,6 +365,127 @@ gui/
 2. **Физическое движение мыши пользователем (>40 px):** Если пользователь перехватывает управление физической мышью, агент мгновенно прерывает выполнение задачи и возвращает управление человеку.
 </file>
 
+<file path="tests/test_audio_listener.py">
+"""
+Модульные тесты для звукового контура AudioListener.
+Проверяют расчет RMS, логику VAD, пороги фильтрации шума для Wake Word и изоляцию от физических аудиоустройств.
+"""
+import unittest
+from unittest.mock import MagicMock, patch
+import numpy as np
+
+from core.audio_listener import AudioListener, SAMPLE_RATE, CHUNK_SIZE
+
+
+class TestAudioListener(unittest.TestCase):
+    def setUp(self):
+        self.vu_mock = MagicMock()
+        self.listener = AudioListener(on_vu_meter=self.vu_mock)
+
+    def test_initial_state(self):
+        """Проверка начальных параметров и флагов слушателя."""
+        self.assertEqual(self.listener._mode, "idle")
+        self.assertTrue(self.listener.wake_word_enabled)
+        self.assertEqual(self.listener.speech_energy_threshold, 0.002)
+        self.assertEqual(self.listener.silence_threshold_ms, 400)
+
+    def test_rms_calculation_silence(self):
+        """Проверка расчета RMS для абсолютной тишины."""
+        silence = np.zeros(CHUNK_SIZE, dtype=np.float32)
+        rms = float(np.sqrt(np.mean(silence ** 2)))
+        self.assertEqual(rms, 0.0)
+
+    def test_rms_calculation_sine_wave(self):
+        """Проверка расчета RMS для тестового синусоидального сигнала."""
+        t = np.linspace(0, 1, CHUNK_SIZE, endpoint=False)
+        sine = (np.sin(2 * np.pi * 440 * t) * 0.5).astype(np.float32)
+        rms = float(np.sqrt(np.mean(sine ** 2)))
+        # Для синусоиды амплитудой A RMS равен A / sqrt(2) ≈ 0.5 / 1.4142 ≈ 0.3535
+        self.assertAlmostEqual(rms, 0.3535, places=2)
+        self.assertGreater(rms, self.listener.speech_energy_threshold)
+
+    def test_wake_word_disabled_skips_processing(self):
+        """Если wake_word_enabled=False, обработка Wake Word не выполняется."""
+        self.listener.wake_word_enabled = False
+        chunk = np.ones(CHUNK_SIZE, dtype=np.float32) * 0.1
+        self.listener._process_wake_word(chunk, rms=0.1)
+
+        self.assertFalse(self.listener._wake_speech_active)
+        self.assertEqual(len(self.listener._wake_buffer), 0)
+        self.assertEqual(len(self.listener._wake_pre_buffer), 0)
+
+    def test_wake_word_short_noise_filtered_out(self):
+        """Короткий шум (< 0.50 с) отбрасывается без запуска STT."""
+        with patch.object(self.listener, "_async_check_wake_word") as mock_check:
+            # Симулируем 0.20 секунды речи (меньше минимального порога 0.50 с)
+            chunks_count = int(SAMPLE_RATE * 0.20 / CHUNK_SIZE)
+            chunk = np.ones(CHUNK_SIZE, dtype=np.float32) * 0.05
+
+            for _ in range(chunks_count):
+                self.listener._process_wake_word(chunk, rms=0.05)
+
+            # Симулируем окончание фразы и тишину 350 мс
+            silence_chunk = np.zeros(CHUNK_SIZE, dtype=np.float32)
+            self.listener._wake_silence_start = 100.0
+            with patch("time.time", return_value=100.4):  # прошло 400 мс тишины
+                self.listener._process_wake_word(silence_chunk, rms=0.0)
+
+            # STT не должен вызываться для короткого щелчка или шума
+            mock_check.assert_not_called()
+            self.assertFalse(self.listener._wake_speech_active)
+            self.assertEqual(len(self.listener._wake_buffer), 0)
+
+    def test_wake_word_sufficient_phrase_triggers_check(self):
+        """Речь длительностью >= 0.50 с после тишины отправляется на проверку слова-триггера."""
+        with patch.object(self.listener, "_async_check_wake_word") as mock_check:
+            # Симулируем 0.60 секунды речи (превышает порог 0.50 с)
+            chunks_count = int(SAMPLE_RATE * 0.60 / CHUNK_SIZE)
+            chunk = np.ones(CHUNK_SIZE, dtype=np.float32) * 0.05
+
+            for _ in range(chunks_count):
+                self.listener._process_wake_word(chunk, rms=0.05)
+
+            self.assertTrue(self.listener._wake_speech_active)
+
+            # Симулируем тишину более 320 мс
+            silence_chunk = np.zeros(CHUNK_SIZE, dtype=np.float32)
+            self.listener._wake_silence_start = 100.0
+            with patch("time.time", return_value=100.4):
+                self.listener._process_wake_word(silence_chunk, rms=0.0)
+
+            mock_check.assert_called_once()
+            self.assertFalse(self.listener._wake_speech_active)
+
+    def test_stop_wake_word_loop_resets_mode(self):
+        """Метод stop_wake_word_loop сбрасывает режим в idle."""
+        self.listener._mode = "wake_listen"
+        self.listener.stop_wake_word_loop()
+        self.assertEqual(self.listener._mode, "idle")
+
+    def test_get_input_devices_mocked(self):
+        """Проверка получения списка микрофонов с фильтрацией системных устройств."""
+        mock_devices = [
+            {"name": "Встроенный микрофон Realtek", "max_input_channels": 2, "hostapi": 0},
+            {"name": "Динамики Realtek", "max_input_channels": 0, "hostapi": 0},
+            {"name": "USB Наушники Микрофон", "max_input_channels": 1, "hostapi": 0}
+        ]
+        with patch("sounddevice.query_devices", return_value=mock_devices):
+            devices = AudioListener.get_input_devices()
+            self.assertEqual(len(devices), 2)
+            self.assertEqual(devices[0]["name"], "Встроенный микрофон Realtek")
+            self.assertEqual(devices[1]["name"], "USB Наушники Микрофон")
+
+    def test_get_input_devices_exception_handled(self):
+        """При исключении в sounddevice возвращается пустой список без падения."""
+        with patch("sounddevice.query_devices", side_effect=Exception("PortAudio error")):
+            devices = AudioListener.get_input_devices()
+            self.assertEqual(devices, [])
+
+
+if __name__ == "__main__":
+    unittest.main()
+</file>
+
 <file path=".env.example">
 # ==============================================================================
 # Переменные окружения Antigravity Voice & Vision Assistant (Jarvis)
@@ -503,99 +503,6 @@ LOG_LEVEL=INFO
 
 # Принудительное указание устройства CUDA (по умолчанию: 0)
 CUDA_VISIBLE_DEVICES=0
-</file>
-
-<file path="AGENTS.md">
-> [!NOTE]
-> **Паспорт проекта для ИИ-агентов:** Данный файл является единым базовым контрактом (Уровень 1) архитектуры контекста Antigravity Voice & Vision Assistant. Регламентирует стек, команды валидации, правила написания кода, архитектурные ограничения и запрещенные паттерны.
-
-# Antigravity Voice & Vision Assistant (Jarvis) — Контракт ИИ-агентов
-
-Автономный локальный голосовой ассистент и мультимодальный агент компьютерного управления (Computer-Use) для Windows 11 с нативной поддержкой физической клавиши Copilot (`Shift + Win + F23`), распознаванием речи Faster-Whisper Turbo на CUDA и моделью зрения Jedi-3B (4-bit NF4) на GPU NVIDIA GeForce RTX 5050 (8 ГБ GDDR7).
-
----
-
-## 1. Стек технологий (Tech Stack)
-
-- **Платформа и ОС:** Windows 11 x64, сессия `WinSta0\Default`.
-- **Среда выполнения и пакетный менеджер:** Python 3.12, изолированное окружение `.venv` под управлением `uv`.
-- **Графический интерфейс:** PyQt6 (Fluent 2 Dark стилизация, немодальные High DPI оверлеи).
-- **Распознавание речи (STT):** `faster-whisper` (модель `turbo`) через C++ акселератор `ctranslate2` (CUDA 12.8, float16) — без оверхеда PyTorch в GUI-процессе (~1.4–1.6 ГБ VRAM).
-- **Компьютерное зрение (Computer-Use):** `xlangai/Jedi-3B-1080p` (fallback: `Qwen/Qwen2.5-VL-3B-Instruct`) в квантовании `bitsandbytes` 4-bit NF4 в отдельном воркер-процессе (~3.0–3.2 ГБ VRAM).
-- **Интеграция с Windows 11:**
-  - Захват экрана: прямой Win32 GDI `BitBlt` (~4 мс) с автоопределением активного монитора.
-  - Ввод: Unicode `SendInput` ($\le 20$ символов) + Clipboard `Ctrl+V` ($> 20$ символов).
-  - Звук: `pycaw` (Audio Ducking с приглушением до 25%).
-  - Клавиатура: `pynput` с хуком `WH_KEYBOARD_LL` (Copilot `VK_F23 = 0x86` / `0x8E`).
-
----
-
-## 2. Команды разработки и верификации (Commands)
-
-```powershell
-# Установка и синхронизация зависимостей
-uv sync
-
-# Запуск основного приложения (PyQt6 GUI)
-.\.venv\Scripts\python.exe main.py
-
-# Запуск полного сьюта unit-тестов (92 теста, 100% PASS)
-.\.venv\Scripts\python.exe -m unittest discover tests
-
-# Комплексная системная проверка всех 10 подсистем (10/10 OK)
-.\.venv\Scripts\python.exe tests/full_verification.py
-
-# Фоновая предзагрузка весов VLM Jedi-3B в кэш Hugging Face
-.\.venv\Scripts\python.exe download_vision_model.py
-
-# Генерация тихого ярлыка на рабочем столе Windows
-.\.venv\Scripts\python.exe create_shortcut.py
-```
-
----
-
-## 3. Стандарты кода (Code Standards)
-
-1. **Языковой стандарт:**
-   - Код, названия переменных, функций, классов и файлов — строго на **английском языке**.
-   - Комментарии в коде, docstrings, аннотации и коммиты Git — строго на **русском языке** по стандарту Conventional Commits (`исправление: ...`, `функция: ...`, `рефакторинг: ...`).
-2. **Структурная чистота (Early Returns):**
-   - Запрещена вложенность глубже 3 уровней. Использовать guard clauses и ранние возвраты.
-   - Длина функций: до 30–40 строк. Большие функции декомпозировать на вспомогательные.
-3. **Строгая типизация (Zero-Any):**
-   - Полный запрет на `Any` или неявные типы аргументов и возвращаемых значений.
-   - Обязательное использование тайп-хинтинга Python (`typing`, `Union`, `Optional`, `Tuple`).
-4. **Запрет заглушек (Zero-Placeholders):**
-   - Категорически запрещены комментарии `// TODO`, `pass` вместо логики или нереализованные заглушки.
-
----
-
-## 4. Архитектурные правила (Architecture Rules)
-
-1. **Двухпроцессная изоляция VRAM:**
-   - Библиотеки `torch`, `torchvision`, `transformers`, `bitsandbytes` **категорически запрещены** к импорту в основном GUI-процессе (`main.py`, `core/executor.py`, `core/speech_to_text.py` и др.).
-   - Все операции VLM выполняются строго внутри процесса `core/vision_agent.py`.
-2. **Безопасность вызовов PowerShell:**
-   - Системные команды исполняются только через Base64 `-EncodedCommand` (UTF-16LE) с обязательным `shell=False`.
-3. **Двухуровневая маршрутизация:**
-   - `DecisionEngine`: Fast-Path (0 мс, системные команды, окна, ссылки) выполняется мгновенно; Vision-Path передается в очередь воркера только для сложных интерфейсных сценариев.
-4. **Fail-Safe защита:**
-   - Перехват `ESC` или смещение мыши $>40$ px немедленно прерывает выполнение компьютерного управления.
-5. **Модульная архитектура (Уровень 3):**
-   - Детализация подсистем описана в [`docs/architecture/`](file:///c:/Users/denis/Documents/antigravity/localAgent/docs/architecture/):
-     * [Схемы данных и хранилище](file:///c:/Users/denis/Documents/antigravity/localAgent/docs/architecture/database.md)
-     * [API, IPC и маршрутизация](file:///c:/Users/denis/Documents/antigravity/localAgent/docs/architecture/api.md)
-     * [Графический интерфейс PyQt6](file:///c:/Users/denis/Documents/antigravity/localAgent/docs/architecture/frontend.md)
-     * [Компьютерное зрение и Screen Tools](file:///c:/Users/denis/Documents/antigravity/localAgent/docs/architecture/vision_agent.md)
-
----
-
-## 5. Запрещенные паттерны (Prohibited Patterns)
-
-- ❌ Запрещен импорт `torch` в главном процессе (приводит к конфликтам DLL и утечкам VRAM).
-- ❌ Запрещены вызовы shell с объединением строк (`f"powershell {cmd}"`) из-за уязвимостей инъекций.
-- ❌ Запрещены деструктивные операции ОС без интерактивного подтверждения через `ask_question`.
-- ❌ Запрещено хранение секретов и токенов в кодовой базе (использовать `.env`).
 </file>
 
 <file path="gui/close_dialog.py">
@@ -1628,6 +1535,99 @@ class TrayManager(QObject):
         self.tray_icon.showMessage(title, text, QSystemTrayIcon.MessageIcon.Information, 2500)
 </file>
 
+<file path="AGENTS.md">
+> [!NOTE]
+> **Паспорт проекта для ИИ-агентов:** Данный файл является единым базовым контрактом (Уровень 1) архитектуры контекста Antigravity Voice & Vision Assistant. Регламентирует стек, команды валидации, правила написания кода, архитектурные ограничения и запрещенные паттерны.
+
+# Antigravity Voice & Vision Assistant (Jarvis) — Контракт ИИ-агентов
+
+Автономный локальный голосовой ассистент и мультимодальный агент компьютерного управления (Computer-Use) для Windows 11 с нативной поддержкой физической клавиши Copilot (`Shift + Win + F23`), распознаванием речи Faster-Whisper Turbo на CUDA и моделью зрения Jedi-3B (4-bit NF4) на GPU NVIDIA GeForce RTX 5050 (8 ГБ GDDR7).
+
+---
+
+## 1. Стек технологий (Tech Stack)
+
+- **Платформа и ОС:** Windows 11 x64, сессия `WinSta0\Default`.
+- **Среда выполнения и пакетный менеджер:** Python 3.12, изолированное окружение `.venv` под управлением `uv`.
+- **Графический интерфейс:** PyQt6 (Fluent 2 Dark стилизация, немодальные High DPI оверлеи).
+- **Распознавание речи (STT):** `faster-whisper` (модель `turbo`) через C++ акселератор `ctranslate2` (CUDA 12.8, float16) — без оверхеда PyTorch в GUI-процессе (~1.4–1.6 ГБ VRAM).
+- **Компьютерное зрение (Computer-Use):** `xlangai/Jedi-3B-1080p` (fallback: `Qwen/Qwen2.5-VL-3B-Instruct`) в квантовании `bitsandbytes` 4-bit NF4 в отдельном воркер-процессе (~3.0–3.2 ГБ VRAM).
+- **Интеграция с Windows 11:**
+  - Захват экрана: прямой Win32 GDI `BitBlt` (~4 мс) с автоопределением активного монитора.
+  - Ввод: Unicode `SendInput` ($\le 20$ символов) + Clipboard `Ctrl+V` ($> 20$ символов).
+  - Звук: `pycaw` (Audio Ducking с приглушением до 25%).
+  - Клавиатура: `pynput` с хуком `WH_KEYBOARD_LL` (Copilot `VK_F23 = 0x86` / `0x8E`).
+
+---
+
+## 2. Команды разработки и верификации (Commands)
+
+```powershell
+# Установка и синхронизация зависимостей
+uv sync
+
+# Запуск основного приложения (PyQt6 GUI)
+.\.venv\Scripts\python.exe main.py
+
+# Запуск полного сьюта unit-тестов (107 тестов, 100% PASS)
+.\.venv\Scripts\python.exe -m unittest discover tests
+
+# Комплексная системная проверка всех 10 подсистем (10/10 OK)
+.\.venv\Scripts\python.exe tests/full_verification.py
+
+# Фоновая предзагрузка весов VLM Jedi-3B в кэш Hugging Face
+.\.venv\Scripts\python.exe download_vision_model.py
+
+# Генерация тихого ярлыка на рабочем столе Windows
+.\.venv\Scripts\python.exe create_shortcut.py
+```
+
+---
+
+## 3. Стандарты кода (Code Standards)
+
+1. **Языковой стандарт:**
+   - Код, названия переменных, функций, классов и файлов — строго на **английском языке**.
+   - Комментарии в коде, docstrings, аннотации и коммиты Git — строго на **русском языке** по стандарту Conventional Commits (`исправление: ...`, `функция: ...`, `рефакторинг: ...`).
+2. **Структурная чистота (Early Returns):**
+   - Запрещена вложенность глубже 3 уровней. Использовать guard clauses и ранние возвраты.
+   - Длина функций: до 30–40 строк. Большие функции декомпозировать на вспомогательные.
+3. **Строгая типизация (Zero-Any):**
+   - Полный запрет на `Any` или неявные типы аргументов и возвращаемых значений.
+   - Обязательное использование тайп-хинтинга Python (`typing`, `Union`, `Optional`, `Tuple`).
+4. **Запрет заглушек (Zero-Placeholders):**
+   - Категорически запрещены комментарии `// TODO`, `pass` вместо логики или нереализованные заглушки.
+
+---
+
+## 4. Архитектурные правила (Architecture Rules)
+
+1. **Двухпроцессная изоляция VRAM:**
+   - Библиотеки `torch`, `torchvision`, `transformers`, `bitsandbytes` **категорически запрещены** к импорту в основном GUI-процессе (`main.py`, `core/executor.py`, `core/speech_to_text.py` и др.).
+   - Все операции VLM выполняются строго внутри процесса `core/vision_agent.py`.
+2. **Безопасность вызовов PowerShell:**
+   - Системные команды исполняются только через Base64 `-EncodedCommand` (UTF-16LE) с обязательным `shell=False`.
+3. **Двухуровневая маршрутизация:**
+   - `DecisionEngine`: Fast-Path (0 мс, системные команды, окна, ссылки) выполняется мгновенно; Vision-Path передается в очередь воркера только для сложных интерфейсных сценариев.
+4. **Fail-Safe защита:**
+   - Перехват `ESC` или смещение мыши $>40$ px немедленно прерывает выполнение компьютерного управления.
+5. **Модульная архитектура (Уровень 3):**
+   - Детализация подсистем описана в [`docs/architecture/`](file:///c:/Users/denis/Documents/antigravity/localAgent/docs/architecture/):
+     * [Схемы данных и хранилище](file:///c:/Users/denis/Documents/antigravity/localAgent/docs/architecture/database.md)
+     * [API, IPC и маршрутизация](file:///c:/Users/denis/Documents/antigravity/localAgent/docs/architecture/api.md)
+     * [Графический интерфейс PyQt6](file:///c:/Users/denis/Documents/antigravity/localAgent/docs/architecture/frontend.md)
+     * [Компьютерное зрение и Screen Tools](file:///c:/Users/denis/Documents/antigravity/localAgent/docs/architecture/vision_agent.md)
+
+---
+
+## 5. Запрещенные паттерны (Prohibited Patterns)
+
+- ❌ Запрещен импорт `torch` в главном процессе (приводит к конфликтам DLL и утечкам VRAM).
+- ❌ Запрещены вызовы shell с объединением строк (`f"powershell {cmd}"`) из-за уязвимостей инъекций.
+- ❌ Запрещены деструктивные операции ОС без интерактивного подтверждения через `ask_question`.
+- ❌ Запрещено хранение секретов и токенов в кодовой базе (использовать `.env`).
+</file>
+
 <file path="create_shortcut.py">
 """
 Скрипт генерации ярлыка на рабочем столе Windows (Antigravity Voice.lnk).
@@ -1706,116 +1706,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-</file>
-
-<file path="core/audio_ducking.py">
-"""
-Модуль Audio Ducking для автоматического приглушения фонового звука Windows.
-Использует Windows Core Audio API через pycaw.
-"""
-import threading
-from typing import Optional
-from comtypes import CLSCTX_ALL
-from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-
-class AudioDucker:
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._previous_volume: Optional[float] = None
-        self._is_ducked: bool = False
-
-    def _get_volume_endpoint(self) -> Optional[IAudioEndpointVolume]:
-        """Получает COM-интерфейс управления мастер-громкостью Windows."""
-        try:
-            devices = AudioUtilities.GetSpeakers()
-            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-            return interface.QueryInterface(IAudioEndpointVolume)
-        except Exception:
-            return None
-
-    def duck(self, duck_factor: float = 0.20) -> None:
-        """Приглушает системный звук на время записи голоса."""
-        with self._lock:
-            if self._is_ducked:
-                return
-
-            try:
-                import comtypes
-                comtypes.CoInitialize()
-            except Exception:
-                pass
-
-            endpoint = self._get_volume_endpoint()
-            if endpoint is None:
-                return
-
-            try:
-                current_vol = endpoint.GetMasterVolumeLevelScalar()
-                self._previous_volume = current_vol
-                # Понижаем громкость до доли от текущей (если звук был выключен — оставляем 0, иначе минимум 5%)
-                if current_vol <= 0.001:
-                    target_vol = 0.0
-                else:
-                    target_vol = max(0.05, current_vol * duck_factor)
-                endpoint.SetMasterVolumeLevelScalar(target_vol, None)
-                self._is_ducked = True
-            except Exception:
-                pass
-
-    def unduck(self) -> None:
-        """Восстанавливает прежний уровень громкости Windows."""
-        with self._lock:
-            if not self._is_ducked or self._previous_volume is None:
-                return
-
-            try:
-                import comtypes
-                comtypes.CoInitialize()
-            except Exception:
-                pass
-
-            endpoint = self._get_volume_endpoint()
-            if endpoint is not None:
-                try:
-                    endpoint.SetMasterVolumeLevelScalar(self._previous_volume, None)
-                except Exception:
-                    pass
-            self._is_ducked = False
-            self._previous_volume = None
-
-    def set_volume(self, percent: float) -> bool:
-        """Устанавливает абсолютный уровень громкости от 0.0 до 1.0."""
-        try:
-            import comtypes
-            comtypes.CoInitialize()
-        except Exception:
-            pass
-
-        endpoint = self._get_volume_endpoint()
-        if endpoint is None:
-            return False
-        try:
-            scalar = max(0.0, min(1.0, percent))
-            endpoint.SetMasterVolumeLevelScalar(scalar, None)
-            return True
-        except Exception:
-            return False
-
-    def get_volume(self) -> float:
-        """Возвращает текущую громкость в процентах (0-100)."""
-        try:
-            import comtypes
-            comtypes.CoInitialize()
-        except Exception:
-            pass
-
-        endpoint = self._get_volume_endpoint()
-        if endpoint is None:
-            return 50.0
-        try:
-            return endpoint.GetMasterVolumeLevelScalar() * 100.0
-        except Exception:
-            return 50.0
 </file>
 
 <file path="core/text_to_speech.py">
@@ -1935,6 +1825,116 @@ vision = [
     "accelerate>=0.30.0",
     "qwen-vl-utils>=0.0.8",
 ]
+</file>
+
+<file path="core/audio_ducking.py">
+"""
+Модуль Audio Ducking для автоматического приглушения фонового звука Windows.
+Использует Windows Core Audio API через pycaw.
+"""
+import threading
+from typing import Optional
+from comtypes import CLSCTX_ALL
+from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+
+class AudioDucker:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._previous_volume: Optional[float] = None
+        self._is_ducked: bool = False
+
+    def _get_volume_endpoint(self) -> Optional[IAudioEndpointVolume]:
+        """Получает COM-интерфейс управления мастер-громкостью Windows."""
+        try:
+            devices = AudioUtilities.GetSpeakers()
+            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            return interface.QueryInterface(IAudioEndpointVolume)
+        except Exception:
+            return None
+
+    def duck(self, duck_factor: float = 0.20) -> None:
+        """Приглушает системный звук на время записи голоса."""
+        with self._lock:
+            if self._is_ducked:
+                return
+
+            try:
+                import comtypes
+                comtypes.CoInitialize()
+            except Exception:
+                pass
+
+            endpoint = self._get_volume_endpoint()
+            if endpoint is None:
+                return
+
+            try:
+                current_vol = endpoint.GetMasterVolumeLevelScalar()
+                self._previous_volume = current_vol
+                # Понижаем громкость до доли от текущей (если звук был выключен — оставляем 0, иначе минимум 5%)
+                if current_vol <= 0.001:
+                    target_vol = 0.0
+                else:
+                    target_vol = max(0.05, current_vol * duck_factor)
+                endpoint.SetMasterVolumeLevelScalar(target_vol, None)
+                self._is_ducked = True
+            except Exception:
+                pass
+
+    def unduck(self) -> None:
+        """Восстанавливает прежний уровень громкости Windows."""
+        with self._lock:
+            if not self._is_ducked or self._previous_volume is None:
+                return
+
+            try:
+                import comtypes
+                comtypes.CoInitialize()
+            except Exception:
+                pass
+
+            endpoint = self._get_volume_endpoint()
+            if endpoint is not None:
+                try:
+                    endpoint.SetMasterVolumeLevelScalar(self._previous_volume, None)
+                except Exception:
+                    pass
+            self._is_ducked = False
+            self._previous_volume = None
+
+    def set_volume(self, percent: float) -> bool:
+        """Устанавливает абсолютный уровень громкости от 0.0 до 1.0."""
+        try:
+            import comtypes
+            comtypes.CoInitialize()
+        except Exception:
+            pass
+
+        endpoint = self._get_volume_endpoint()
+        if endpoint is None:
+            return False
+        try:
+            scalar = max(0.0, min(1.0, percent))
+            endpoint.SetMasterVolumeLevelScalar(scalar, None)
+            return True
+        except Exception:
+            return False
+
+    def get_volume(self) -> float:
+        """Возвращает текущую громкость в процентах (0-100)."""
+        try:
+            import comtypes
+            comtypes.CoInitialize()
+        except Exception:
+            pass
+
+        endpoint = self._get_volume_endpoint()
+        if endpoint is None:
+            return 50.0
+        try:
+            return endpoint.GetMasterVolumeLevelScalar() * 100.0
+        except Exception:
+            return 50.0
 </file>
 
 <file path="gui/floating_pill.py">
@@ -2166,408 +2166,6 @@ class ClickIndicatorOverlay(QWidget):
         painter.drawEllipse(QPointF(center_x, center_y), 4.0, 4.0)
 </file>
 
-<file path="tests/test_screen_tools.py">
-"""
-Тесты для модуля управления экраном core/screen_tools.py.
-"""
-
-import unittest
-from PIL import Image
-from core.screen_tools import ScreenController, ScreenDimensions, VK_MAP
-
-
-class TestScreenTools(unittest.TestCase):
-    """Тестирование координатной сетки и захвата экрана."""
-
-    def setUp(self) -> None:
-        self.controller = ScreenController()
-
-    def test_screen_dimensions_valid(self) -> None:
-        """Проверка получения физического разрешения монитора."""
-        dims = self.controller.dimensions
-        self.assertGreater(dims.width, 0)
-        self.assertGreater(dims.height, 0)
-
-    def test_denormalize_coordinate_corners(self) -> None:
-        """Проверка крайних точек координатной сетки 0..1000."""
-        dims = self.controller.dimensions
-        # Верхний левый угол
-        x, y = self.controller.denormalize_coordinate(norm_y=0, norm_x=0)
-        self.assertEqual(x, dims.left)
-        self.assertEqual(y, dims.top)
-
-        # Нижний правый угол
-        x, y = self.controller.denormalize_coordinate(norm_y=1000, norm_x=1000)
-        self.assertEqual(x, dims.left + dims.width - 1)
-        self.assertEqual(y, dims.top + dims.height - 1)
-
-    def test_denormalize_coordinate_center(self) -> None:
-        """Проверка центра экрана (500, 500)."""
-        dims = self.controller.dimensions
-        x, y = self.controller.denormalize_coordinate(norm_y=500, norm_x=500)
-        self.assertAlmostEqual(x, dims.left + dims.width // 2, delta=2)
-        self.assertAlmostEqual(y, dims.top + dims.height // 2, delta=2)
-
-    def test_denormalize_coordinate_clamping(self) -> None:
-        """Проверка отсечения координат за пределами диапазона 0..1000."""
-        dims = self.controller.dimensions
-        x, y = self.controller.denormalize_coordinate(norm_y=-100, norm_x=1200)
-        self.assertEqual(x, dims.left + dims.width - 1)
-        self.assertEqual(y, dims.top)
-
-    def test_active_monitor_detection(self) -> None:
-        """Проверка определения активного монитора."""
-        left, top, w, h = self.controller.get_active_monitor_rect()
-        self.assertGreater(w, 0)
-        self.assertGreater(h, 0)
-        self.assertIsInstance(left, int)
-        self.assertIsInstance(top, int)
-
-    def test_vk_map_contains_essentials(self) -> None:
-        """Проверка наличия ключевых клавиш в таблице виртуальных кодов."""
-        for key in ["enter", "esc", "ctrl", "alt", "win", "tab", "space"]:
-            self.assertIn(key, VK_MAP)
-            self.assertIsInstance(VK_MAP[key], int)
-
-    def test_capture_screen_returns_image(self) -> None:
-        """Проверка захвата экрана в формате PIL.Image."""
-        img = self.controller.capture_screen()
-        self.assertIsInstance(img, Image.Image)
-        self.assertGreater(img.width, 0)
-        self.assertGreater(img.height, 0)
-
-    def test_fallback_capture_mss(self) -> None:
-        """Проверка резервного захвата экрана через mss/fallback без падения и без AttributeError."""
-        img = self.controller._fallback_capture()
-        self.assertIsInstance(img, Image.Image)
-        self.assertGreater(img.width, 0)
-        self.assertGreater(img.height, 0)
-
-    def test_denormalize_negative_monitor_coordinates(self) -> None:
-        """Проверка корректной денормализации на дополнительном левом мониторе с отрицательными координатами."""
-        # Монитор слева от основного: left = -1920, top = 0, width = 1920, height = 1080
-        self.controller._current_monitor = (-1920, 0, 1920, 1080)
-        
-        # Левый верхний угол
-        x, y = self.controller.denormalize_coordinate(norm_x=0, norm_y=0)
-        self.assertEqual(x, -1920)
-        self.assertEqual(y, 0)
-
-        # Центр левого монитора
-        x, y = self.controller.denormalize_coordinate(norm_x=500, norm_y=500)
-        self.assertEqual(x, -960)
-        self.assertEqual(y, 540)
-
-        # Правый нижний угол левого монитора
-        x, y = self.controller.denormalize_coordinate(norm_x=1000, norm_y=1000)
-        self.assertEqual(x, -1)
-        self.assertEqual(y, 1079)
-
-    def test_type_text_short_uses_direct_input(self) -> None:
-        """Короткий текст (<= 20 символов) отправляется напрямую через _type_chars_direct."""
-        from unittest.mock import patch
-        with patch.object(self.controller, "_type_chars_direct") as mock_direct:
-            with patch.object(self.controller, "hotkey") as mock_hotkey:
-                self.controller.type_text("Привет, мир!", press_enter=False)
-                mock_direct.assert_called_once_with("Привет, мир!")
-                mock_hotkey.assert_not_called()
-
-    def test_type_text_long_uses_clipboard(self) -> None:
-        """Длинный текст (> 20 символов) передается через буфер обмена Windows и hotkey Ctrl+V."""
-        from unittest.mock import patch
-        long_text = "Этот текст точно длиннее двадцати символов для тестирования"
-        with patch.object(self.controller, "_type_chars_direct") as mock_direct:
-            with patch.object(self.controller, "hotkey") as mock_hotkey:
-                self.controller.type_text(long_text, press_enter=False)
-                mock_hotkey.assert_called_once_with(["ctrl", "v"])
-                mock_direct.assert_not_called()
-
-
-if __name__ == "__main__":
-    unittest.main()
-</file>
-
-<file path="tests/test_vision_agent.py">
-"""
-Модульные тесты для парсера действий и контроллера Vision-агента (core/vision_agent.py).
-"""
-
-import os
-import sys
-import unittest
-from unittest.mock import MagicMock, patch
-
-from core.vision_agent import ActionParser, FailSafeMonitor, VisionAction, VisionAgentProcessManager
-from gui.main_window import MainWindow
-
-
-class TestVisionAgentParser(unittest.TestCase):
-    """Тестирование ActionParser для структурированных ответов модели."""
-
-    def test_parse_clean_json_click(self) -> None:
-        """Парсинг действия клика с нормализованными координатами."""
-        raw = """```json
-{
-  "thought": "Вижу кнопку поиска на экране",
-  "action": "click",
-  "coordinate": [150, 480]
-}
-```"""
-        act = ActionParser.parse(raw)
-        self.assertEqual(act.action_type, "click")
-        self.assertEqual(act.coordinate, (150, 480))
-        self.assertIn("Вижу кнопку поиска", act.thought)
-
-    def test_parse_type_with_enter(self) -> None:
-        """Парсинг действия ввода текста с нажатием Enter."""
-        raw = """```json
-{
-  "thought": "Ввожу поисковый запрос Мармук",
-  "action": "type",
-  "text": "Мармук",
-  "press_enter": true
-}
-```"""
-        act = ActionParser.parse(raw)
-        self.assertEqual(act.action_type, "type")
-        self.assertEqual(act.text, "Мармук")
-        self.assertTrue(act.press_enter)
-
-    def test_parse_hotkey(self) -> None:
-        """Парсинг комбинации горячих клавиш."""
-        raw = """```json
-{
-  "thought": "Открываю новую вкладку браузера",
-  "action": "hotkey",
-  "keys": ["Ctrl", "T"]
-}
-```"""
-        act = ActionParser.parse(raw)
-        self.assertEqual(act.action_type, "hotkey")
-        self.assertEqual(act.keys, ["ctrl", "t"])
-
-    def test_parse_scroll(self) -> None:
-        """Парсинг прокрутки экрана вниз."""
-        raw = """{
-  "thought": "Прокручиваю ленту вниз",
-  "action": "scroll",
-  "direction": "down"
-}"""
-        act = ActionParser.parse(raw)
-        self.assertEqual(act.action_type, "scroll")
-        self.assertEqual(act.direction, "down")
-
-    def test_parse_finish_action(self) -> None:
-        """Парсинг успешного завершения задачи."""
-        raw = """```json
-{
-  "thought": "Видео начало воспроизводиться",
-  "action": "finish",
-  "message": "Включил последнее видео Мармука"
-}
-```"""
-        act = ActionParser.parse(raw)
-        self.assertEqual(act.action_type, "finish")
-        self.assertEqual(act.message, "Включил последнее видео Мармука")
-
-    def test_parse_confirmation_request(self) -> None:
-        """Парсинг запроса подтверждения опасного действия."""
-        raw = """```json
-{
-  "thought": "Подготовлено сообщение для отправки",
-  "action": "ask_confirmation",
-  "message": "Отправить сообщение в чат с Вовой?"
-}
-```"""
-        act = ActionParser.parse(raw)
-        self.assertEqual(act.action_type, "ask_confirmation")
-        self.assertIn("Отправить сообщение", act.message)
-
-    def test_parse_malformed_json_fallback(self) -> None:
-        """Корректная обработка синтаксически невалидного ответа."""
-        raw = "Я не знаю, что делать дальше, вот текст без скобок."
-        act = ActionParser.parse(raw)
-        self.assertEqual(act.action_type, "finish")
-        self.assertIn("Не удалось распознать JSON", act.thought)
-
-    def test_parse_alias_normalization(self) -> None:
-        """Нормализация синонимов и алиасов действий модели в ActionParser."""
-        # left_click -> click
-        act_click = ActionParser.parse('{"thought": "Клик", "action": "left_click", "coordinate": [100, 200]}')
-        self.assertEqual(act_click.action_type, "click")
-
-        # right-click -> right_click
-        act_right = ActionParser.parse('{"thought": "Контекстное меню", "action": "right-click", "coordinate": [200, 300]}')
-        self.assertEqual(act_right.action_type, "right_click")
-
-        # write -> type
-        act_write = ActionParser.parse('{"thought": "Ввод текста", "action": "write", "text": "тестовая строка"}')
-        self.assertEqual(act_write.action_type, "type")
-
-        # done -> finish
-        act_done = ActionParser.parse('{"thought": "Завершение", "action": "done", "message": "задача выполнена"}')
-        self.assertEqual(act_done.action_type, "finish")
-
-
-class TestFailSafeMonitor(unittest.TestCase):
-    """Тестирование экстренного прерывания действий."""
-
-    def test_cursor_position_valid(self) -> None:
-        """Проверка получения координат мыши."""
-        monitor = FailSafeMonitor()
-        x, y = monitor.get_cursor_position()
-        self.assertIsInstance(x, int)
-        self.assertIsInstance(y, int)
-
-    def test_interrupt_detection_esc_pressed(self) -> None:
-        """Нажатие клавиши ESC (0x1B) прерывает выполнение агента."""
-        monitor = FailSafeMonitor()
-        with patch.object(monitor.user32, "GetAsyncKeyState", return_value=0x8000):
-            interrupted, reason = monitor.is_interrupted()
-            self.assertTrue(interrupted)
-            self.assertIn("ESC", reason)
-
-    def test_interrupt_detection_mouse_delta_exceeded(self) -> None:
-        """Физическое смещение мыши более чем на 40 px прерывает выполнение агента."""
-        monitor = FailSafeMonitor()
-        monitor.update_known_position(100, 100)
-        with patch.object(monitor.user32, "GetAsyncKeyState", return_value=0):
-            with patch.object(monitor, "get_cursor_position", return_value=(150, 100)):
-                interrupted, reason = monitor.is_interrupted()
-                self.assertTrue(interrupted)
-                self.assertIn("мыши", reason)
-
-    def test_interrupt_detection_mouse_delta_within_threshold(self) -> None:
-        """Незначительное смещение мыши (<= 40 px) не прерывает выполнение агента."""
-        monitor = FailSafeMonitor()
-        monitor.update_known_position(100, 100)
-        with patch.object(monitor.user32, "GetAsyncKeyState", return_value=0):
-            with patch.object(monitor, "get_cursor_position", return_value=(110, 100)):
-                interrupted, reason = monitor.is_interrupted()
-                self.assertFalse(interrupted)
-                self.assertEqual(reason, "")
-
-
-class TestProcessManager(unittest.TestCase):
-    """Тестирование диспетчера процессов VisionAgentProcessManager."""
-
-    def test_manager_initial_state(self) -> None:
-        """Проверка начального состояния менеджера без запуска процесса."""
-        mgr = VisionAgentProcessManager()
-        self.assertFalse(mgr.is_running())
-        self.assertFalse(mgr.is_ready())
-        self.assertEqual(mgr.model_name, "xlangai/Jedi-3B-1080p")
-        self.assertEqual(mgr.fallback_model, "Qwen/Qwen2.5-VL-3B-Instruct")
-
-    def test_manager_fallback_customization(self) -> None:
-        """Проверка настройки резервной модели."""
-        mgr = VisionAgentProcessManager(fallback_model="custom/fallback")
-        self.assertEqual(mgr.fallback_model, "custom/fallback")
-
-    @patch("core.vision_agent.mp.Process")
-    def test_manager_is_loading(self, mock_process_cls) -> None:
-        """Проверка метода is_loading() (при старте True, при ready False, при stop False)."""
-        mock_proc = MagicMock()
-        mock_proc.is_alive.return_value = True
-        mock_process_cls.return_value = mock_proc
-
-        mgr = VisionAgentProcessManager()
-        # До старта: процесс не запущен
-        self.assertFalse(mgr.is_loading())
-
-        # 1. При старте: процесс запущен, веса модели еще не готовы
-        mgr.start()
-        self.assertTrue(mgr.is_running())
-        self.assertTrue(mgr.is_loading())
-
-        # 2. При ready: модель загружена в GPU
-        mgr._is_ready = True
-        self.assertFalse(mgr.is_loading())
-        self.assertTrue(mgr.is_ready())
-
-        # 3. При stop: процесс остановлен
-        mock_proc.is_alive.return_value = False
-        mgr.stop()
-        self.assertFalse(mgr.is_loading())
-        self.assertFalse(mgr.is_running())
-
-    @patch("core.vision_agent.mp.Process")
-    def test_manager_detects_worker_crash(self, mock_process_cls) -> None:
-        """При краше процесса воркера во время занятости сбрасывается _is_busy и генерируется ошибка."""
-        mock_proc = MagicMock()
-        mock_proc.is_alive.return_value = False
-        mock_process_cls.return_value = mock_proc
-
-        mgr = VisionAgentProcessManager()
-        mgr._process = mock_proc
-        mgr._is_busy = True
-        mgr._status_queue = MagicMock()
-        mgr._status_queue.get_nowait.side_effect = Exception("Queue empty")
-
-        events = mgr.poll_status()
-        self.assertFalse(mgr.is_busy())
-        self.assertTrue(any(ev.get("type") == "error" and "неожиданно завершился" in ev.get("message", "") for ev in events))
-
-
-class TestMainWindowStatus(unittest.TestCase):
-    """Тестирование метода set_llm_status в MainWindow для состояний 'loading', 'ready', 'error', 'not_installed'."""
-
-    @classmethod
-    def setUpClass(cls):
-        from PyQt6.QtWidgets import QApplication
-        cls.app = QApplication.instance() or QApplication(sys.argv)
-
-    def test_set_llm_status(self) -> None:
-        """Проверка установки статусов 'loading', 'ready', 'error', 'not_installed'."""
-        config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "settings.json")
-        window = MainWindow(config_path)
-
-        # 1. Состояние 'loading'
-        window.set_llm_status("loading")
-        self.assertEqual(window.card_ai.status_label.text(), "Загрузка в GPU...")
-        self.assertIn("#F59E0B", window.card_ai.status_label.styleSheet())
-        self.assertEqual(window.btn_download_llm.text(), "⏳ Загрузка в VRAM...")
-        self.assertFalse(window.btn_download_llm.isEnabled())
-
-        # 2. Состояние 'ready'
-        window.set_llm_status("ready")
-        self.assertEqual(window.card_ai.status_label.text(), "Jedi-3B (Готова / Warm)")
-        self.assertIn("#34D399", window.card_ai.status_label.styleSheet())
-        self.assertEqual(window.btn_download_llm.text(), "✓ Jedi-3B (1080p) готова")
-        self.assertFalse(window.btn_download_llm.isEnabled())
-
-        # 3. Состояние 'error'
-        window.set_llm_status("error")
-        self.assertEqual(window.card_ai.status_label.text(), "Ошибка загрузки")
-        self.assertIn("#EF4444", window.card_ai.status_label.styleSheet())
-        self.assertEqual(window.btn_download_llm.text(), "⚠ Ошибка Vision-модели")
-        self.assertTrue(window.btn_download_llm.isEnabled())
-
-        # 4. Состояние 'not_installed'
-        window.set_llm_status("not_installed")
-        self.assertEqual(window.card_ai.status_label.text(), "Fast-Path (0 мс, 0 МБ)")
-        self.assertIn("#60A5FA", window.card_ai.status_label.styleSheet())
-        self.assertEqual(window.btn_download_llm.text(), "📥 Скачать Jedi-3B (1080p)")
-        self.assertTrue(window.btn_download_llm.isEnabled())
-
-
-class TestTorchIsolation(unittest.TestCase):
-    """Тестирование архитектурной изоляции PyTorch от основного процесса."""
-
-    def test_torch_not_in_sys_modules(self) -> None:
-        """PyTorch не должен импортироваться в адресное пространство основного процесса."""
-        # Основной процесс UI и Fast-Path не должен зависеть от тяжелого Torch runtime
-        self.assertNotIn(
-            "torch",
-            sys.modules,
-            "Критическая ошибка архитектуры: PyTorch импортирован в основной процесс!"
-        )
-
-
-if __name__ == "__main__":
-    unittest.main()
-</file>
-
 <file path="config/commands.json">
 {
   "apps": {
@@ -2749,6 +2347,127 @@ class SpeechToText:
                 return True
             except Exception:
                 return False
+</file>
+
+<file path="tests/test_screen_tools.py">
+"""
+Тесты для модуля управления экраном core/screen_tools.py.
+"""
+
+import unittest
+from PIL import Image
+from core.screen_tools import ScreenController, ScreenDimensions, VK_MAP
+
+
+class TestScreenTools(unittest.TestCase):
+    """Тестирование координатной сетки и захвата экрана."""
+
+    def setUp(self) -> None:
+        self.controller = ScreenController()
+
+    def test_screen_dimensions_valid(self) -> None:
+        """Проверка получения физического разрешения монитора."""
+        dims = self.controller.dimensions
+        self.assertGreater(dims.width, 0)
+        self.assertGreater(dims.height, 0)
+
+    def test_denormalize_coordinate_corners(self) -> None:
+        """Проверка крайних точек координатной сетки 0..1000."""
+        dims = self.controller.dimensions
+        # Верхний левый угол
+        x, y = self.controller.denormalize_coordinate(norm_y=0, norm_x=0)
+        self.assertEqual(x, dims.left)
+        self.assertEqual(y, dims.top)
+
+        # Нижний правый угол
+        x, y = self.controller.denormalize_coordinate(norm_y=1000, norm_x=1000)
+        self.assertEqual(x, dims.left + dims.width - 1)
+        self.assertEqual(y, dims.top + dims.height - 1)
+
+    def test_denormalize_coordinate_center(self) -> None:
+        """Проверка центра экрана (500, 500)."""
+        dims = self.controller.dimensions
+        x, y = self.controller.denormalize_coordinate(norm_y=500, norm_x=500)
+        self.assertAlmostEqual(x, dims.left + dims.width // 2, delta=2)
+        self.assertAlmostEqual(y, dims.top + dims.height // 2, delta=2)
+
+    def test_denormalize_coordinate_clamping(self) -> None:
+        """Проверка отсечения координат за пределами диапазона 0..1000."""
+        dims = self.controller.dimensions
+        x, y = self.controller.denormalize_coordinate(norm_y=-100, norm_x=1200)
+        self.assertEqual(x, dims.left + dims.width - 1)
+        self.assertEqual(y, dims.top)
+
+    def test_active_monitor_detection(self) -> None:
+        """Проверка определения активного монитора."""
+        left, top, w, h = self.controller.get_active_monitor_rect()
+        self.assertGreater(w, 0)
+        self.assertGreater(h, 0)
+        self.assertIsInstance(left, int)
+        self.assertIsInstance(top, int)
+
+    def test_vk_map_contains_essentials(self) -> None:
+        """Проверка наличия ключевых клавиш в таблице виртуальных кодов."""
+        for key in ["enter", "esc", "ctrl", "alt", "win", "tab", "space"]:
+            self.assertIn(key, VK_MAP)
+            self.assertIsInstance(VK_MAP[key], int)
+
+    def test_capture_screen_returns_image(self) -> None:
+        """Проверка захвата экрана в формате PIL.Image."""
+        img = self.controller.capture_screen()
+        self.assertIsInstance(img, Image.Image)
+        self.assertGreater(img.width, 0)
+        self.assertGreater(img.height, 0)
+
+    def test_fallback_capture_mss(self) -> None:
+        """Проверка резервного захвата экрана через mss/fallback без падения и без AttributeError."""
+        img = self.controller._fallback_capture()
+        self.assertIsInstance(img, Image.Image)
+        self.assertGreater(img.width, 0)
+        self.assertGreater(img.height, 0)
+
+    def test_denormalize_negative_monitor_coordinates(self) -> None:
+        """Проверка корректной денормализации на дополнительном левом мониторе с отрицательными координатами."""
+        # Монитор слева от основного: left = -1920, top = 0, width = 1920, height = 1080
+        self.controller._current_monitor = (-1920, 0, 1920, 1080)
+        
+        # Левый верхний угол
+        x, y = self.controller.denormalize_coordinate(norm_x=0, norm_y=0)
+        self.assertEqual(x, -1920)
+        self.assertEqual(y, 0)
+
+        # Центр левого монитора
+        x, y = self.controller.denormalize_coordinate(norm_x=500, norm_y=500)
+        self.assertEqual(x, -960)
+        self.assertEqual(y, 540)
+
+        # Правый нижний угол левого монитора
+        x, y = self.controller.denormalize_coordinate(norm_x=1000, norm_y=1000)
+        self.assertEqual(x, -1)
+        self.assertEqual(y, 1079)
+
+    def test_type_text_short_uses_direct_input(self) -> None:
+        """Короткий текст (<= 20 символов) отправляется напрямую через _type_chars_direct."""
+        from unittest.mock import patch
+        with patch.object(self.controller, "_type_chars_direct") as mock_direct:
+            with patch.object(self.controller, "hotkey") as mock_hotkey:
+                self.controller.type_text("Привет, мир!", press_enter=False)
+                mock_direct.assert_called_once_with("Привет, мир!")
+                mock_hotkey.assert_not_called()
+
+    def test_type_text_long_uses_clipboard(self) -> None:
+        """Длинный текст (> 20 символов) передается через буфер обмена Windows и hotkey Ctrl+V."""
+        from unittest.mock import patch
+        long_text = "Этот текст точно длиннее двадцати символов для тестирования"
+        with patch.object(self.controller, "_type_chars_direct") as mock_direct:
+            with patch.object(self.controller, "hotkey") as mock_hotkey:
+                self.controller.type_text(long_text, press_enter=False)
+                mock_hotkey.assert_called_once_with(["ctrl", "v"])
+                mock_direct.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()
 </file>
 
 <file path="core/app_controller.py">
@@ -3167,6 +2886,305 @@ class DesktopAppController:
 
 # Алиас класса для унифицированного доступа и обратной совместимости
 AppController = DesktopAppController
+</file>
+
+<file path="tests/test_vision_agent.py">
+"""
+Модульные тесты для парсера действий и контроллера Vision-агента (core/vision_agent.py).
+"""
+
+import os
+import sys
+import unittest
+from unittest.mock import MagicMock, patch
+
+from core.vision_agent import ActionParser, FailSafeMonitor, VisionAction, VisionAgentProcessManager
+from gui.main_window import MainWindow
+
+
+class TestVisionAgentParser(unittest.TestCase):
+    """Тестирование ActionParser для структурированных ответов модели."""
+
+    def test_parse_clean_json_click(self) -> None:
+        """Парсинг действия клика с нормализованными координатами."""
+        raw = """```json
+{
+  "thought": "Вижу кнопку поиска на экране",
+  "action": "click",
+  "coordinate": [150, 480]
+}
+```"""
+        act = ActionParser.parse(raw)
+        self.assertEqual(act.action_type, "click")
+        self.assertEqual(act.coordinate, (150, 480))
+        self.assertIn("Вижу кнопку поиска", act.thought)
+
+    def test_parse_type_with_enter(self) -> None:
+        """Парсинг действия ввода текста с нажатием Enter."""
+        raw = """```json
+{
+  "thought": "Ввожу поисковый запрос Мармук",
+  "action": "type",
+  "text": "Мармук",
+  "press_enter": true
+}
+```"""
+        act = ActionParser.parse(raw)
+        self.assertEqual(act.action_type, "type")
+        self.assertEqual(act.text, "Мармук")
+        self.assertTrue(act.press_enter)
+
+    def test_parse_hotkey(self) -> None:
+        """Парсинг комбинации горячих клавиш."""
+        raw = """```json
+{
+  "thought": "Открываю новую вкладку браузера",
+  "action": "hotkey",
+  "keys": ["Ctrl", "T"]
+}
+```"""
+        act = ActionParser.parse(raw)
+        self.assertEqual(act.action_type, "hotkey")
+        self.assertEqual(act.keys, ["ctrl", "t"])
+
+    def test_parse_scroll(self) -> None:
+        """Парсинг прокрутки экрана вниз."""
+        raw = """{
+  "thought": "Прокручиваю ленту вниз",
+  "action": "scroll",
+  "direction": "down"
+}"""
+        act = ActionParser.parse(raw)
+        self.assertEqual(act.action_type, "scroll")
+        self.assertEqual(act.direction, "down")
+
+    def test_parse_finish_action(self) -> None:
+        """Парсинг успешного завершения задачи."""
+        raw = """```json
+{
+  "thought": "Видео начало воспроизводиться",
+  "action": "finish",
+  "message": "Включил последнее видео Мармука"
+}
+```"""
+        act = ActionParser.parse(raw)
+        self.assertEqual(act.action_type, "finish")
+        self.assertEqual(act.message, "Включил последнее видео Мармука")
+
+    def test_parse_confirmation_request(self) -> None:
+        """Парсинг запроса подтверждения опасного действия."""
+        raw = """```json
+{
+  "thought": "Подготовлено сообщение для отправки",
+  "action": "ask_confirmation",
+  "message": "Отправить сообщение в чат с Вовой?"
+}
+```"""
+        act = ActionParser.parse(raw)
+        self.assertEqual(act.action_type, "ask_confirmation")
+        self.assertIn("Отправить сообщение", act.message)
+
+    def test_parse_malformed_json_fallback(self) -> None:
+        """Корректная обработка синтаксически невалидного ответа."""
+        raw = "Я не знаю, что делать дальше, вот текст без скобок."
+        act = ActionParser.parse(raw)
+        self.assertEqual(act.action_type, "finish")
+        self.assertIn("Не удалось распознать JSON", act.thought)
+
+    def test_parse_alias_normalization(self) -> None:
+        """Нормализация синонимов и алиасов действий модели в ActionParser."""
+        # left_click -> click
+        act_click = ActionParser.parse('{"thought": "Клик", "action": "left_click", "coordinate": [100, 200]}')
+        self.assertEqual(act_click.action_type, "click")
+
+        # right-click -> right_click
+        act_right = ActionParser.parse('{"thought": "Контекстное меню", "action": "right-click", "coordinate": [200, 300]}')
+        self.assertEqual(act_right.action_type, "right_click")
+
+        # write -> type
+        act_write = ActionParser.parse('{"thought": "Ввод текста", "action": "write", "text": "тестовая строка"}')
+        self.assertEqual(act_write.action_type, "type")
+
+        # done -> finish
+        act_done = ActionParser.parse('{"thought": "Завершение", "action": "done", "message": "задача выполнена"}')
+        self.assertEqual(act_done.action_type, "finish")
+
+    def test_dangerous_hotkeys_detected(self) -> None:
+        """Программные guardrails: выявление опасных системных шорткатов и их синонимов."""
+        self.assertTrue(ActionParser.is_dangerous_hotkey(["shift", "delete"]))
+        self.assertTrue(ActionParser.is_dangerous_hotkey(["win", "r"]))
+        self.assertTrue(ActionParser.is_dangerous_hotkey(["ctrl", "alt", "delete"]))
+        # Проверка алиасов клавиш
+        self.assertTrue(ActionParser.is_dangerous_hotkey(["windows", "r"]))
+        self.assertTrue(ActionParser.is_dangerous_hotkey(["control", "alt", "delete"]))
+        self.assertTrue(ActionParser.is_dangerous_hotkey(["shift", "del"]))
+
+    def test_safe_hotkeys_allowed(self) -> None:
+        """Безопасные шорткаты не блокируются guardrails."""
+        self.assertFalse(ActionParser.is_dangerous_hotkey(["ctrl", "c"]))
+        self.assertFalse(ActionParser.is_dangerous_hotkey(["ctrl", "v"]))
+        self.assertFalse(ActionParser.is_dangerous_hotkey(["ctrl", "t"]))
+        self.assertFalse(ActionParser.is_dangerous_hotkey(["alt", "tab"]))
+        self.assertFalse(ActionParser.is_dangerous_hotkey([]))
+
+
+class TestFailSafeMonitor(unittest.TestCase):
+    """Тестирование экстренного прерывания действий."""
+
+    def test_cursor_position_valid(self) -> None:
+        """Проверка получения координат мыши."""
+        monitor = FailSafeMonitor()
+        x, y = monitor.get_cursor_position()
+        self.assertIsInstance(x, int)
+        self.assertIsInstance(y, int)
+
+    def test_interrupt_detection_esc_pressed(self) -> None:
+        """Нажатие клавиши ESC (0x1B) прерывает выполнение агента."""
+        monitor = FailSafeMonitor()
+        with patch.object(monitor.user32, "GetAsyncKeyState", return_value=0x8000):
+            interrupted, reason = monitor.is_interrupted()
+            self.assertTrue(interrupted)
+            self.assertIn("ESC", reason)
+
+    def test_interrupt_detection_mouse_delta_exceeded(self) -> None:
+        """Физическое смещение мыши более чем на 40 px прерывает выполнение агента."""
+        monitor = FailSafeMonitor()
+        monitor.update_known_position(100, 100)
+        with patch.object(monitor.user32, "GetAsyncKeyState", return_value=0):
+            with patch.object(monitor, "get_cursor_position", return_value=(150, 100)):
+                interrupted, reason = monitor.is_interrupted()
+                self.assertTrue(interrupted)
+                self.assertIn("мыши", reason)
+
+    def test_interrupt_detection_mouse_delta_within_threshold(self) -> None:
+        """Незначительное смещение мыши (<= 40 px) не прерывает выполнение агента."""
+        monitor = FailSafeMonitor()
+        monitor.update_known_position(100, 100)
+        with patch.object(monitor.user32, "GetAsyncKeyState", return_value=0):
+            with patch.object(monitor, "get_cursor_position", return_value=(110, 100)):
+                interrupted, reason = monitor.is_interrupted()
+                self.assertFalse(interrupted)
+                self.assertEqual(reason, "")
+
+
+class TestProcessManager(unittest.TestCase):
+    """Тестирование диспетчера процессов VisionAgentProcessManager."""
+
+    def test_manager_initial_state(self) -> None:
+        """Проверка начального состояния менеджера без запуска процесса."""
+        mgr = VisionAgentProcessManager()
+        self.assertFalse(mgr.is_running())
+        self.assertFalse(mgr.is_ready())
+        self.assertEqual(mgr.model_name, "xlangai/Jedi-3B-1080p")
+        self.assertEqual(mgr.fallback_model, "Qwen/Qwen2.5-VL-3B-Instruct")
+
+    def test_manager_fallback_customization(self) -> None:
+        """Проверка настройки резервной модели."""
+        mgr = VisionAgentProcessManager(fallback_model="custom/fallback")
+        self.assertEqual(mgr.fallback_model, "custom/fallback")
+
+    @patch("core.vision_agent.mp.Process")
+    def test_manager_is_loading(self, mock_process_cls) -> None:
+        """Проверка метода is_loading() (при старте True, при ready False, при stop False)."""
+        mock_proc = MagicMock()
+        mock_proc.is_alive.return_value = True
+        mock_process_cls.return_value = mock_proc
+
+        mgr = VisionAgentProcessManager()
+        # До старта: процесс не запущен
+        self.assertFalse(mgr.is_loading())
+
+        # 1. При старте: процесс запущен, веса модели еще не готовы
+        mgr.start()
+        self.assertTrue(mgr.is_running())
+        self.assertTrue(mgr.is_loading())
+
+        # 2. При ready: модель загружена в GPU
+        mgr._is_ready = True
+        self.assertFalse(mgr.is_loading())
+        self.assertTrue(mgr.is_ready())
+
+        # 3. При stop: процесс остановлен
+        mock_proc.is_alive.return_value = False
+        mgr.stop()
+        self.assertFalse(mgr.is_loading())
+        self.assertFalse(mgr.is_running())
+
+    @patch("core.vision_agent.mp.Process")
+    def test_manager_detects_worker_crash(self, mock_process_cls) -> None:
+        """При краше процесса воркера во время занятости сбрасывается _is_busy и генерируется ошибка."""
+        mock_proc = MagicMock()
+        mock_proc.is_alive.return_value = False
+        mock_process_cls.return_value = mock_proc
+
+        mgr = VisionAgentProcessManager()
+        mgr._process = mock_proc
+        mgr._is_busy = True
+        mgr._status_queue = MagicMock()
+        mgr._status_queue.get_nowait.side_effect = Exception("Queue empty")
+
+        events = mgr.poll_status()
+        self.assertFalse(mgr.is_busy())
+        self.assertTrue(any(ev.get("type") == "error" and "неожиданно завершился" in ev.get("message", "") for ev in events))
+
+
+class TestMainWindowStatus(unittest.TestCase):
+    """Тестирование метода set_llm_status в MainWindow для состояний 'loading', 'ready', 'error', 'not_installed'."""
+
+    @classmethod
+    def setUpClass(cls):
+        from PyQt6.QtWidgets import QApplication
+        cls.app = QApplication.instance() or QApplication(sys.argv)
+
+    def test_set_llm_status(self) -> None:
+        """Проверка установки статусов 'loading', 'ready', 'error', 'not_installed'."""
+        config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "settings.json")
+        window = MainWindow(config_path)
+
+        # 1. Состояние 'loading'
+        window.set_llm_status("loading")
+        self.assertEqual(window.card_ai.status_label.text(), "Загрузка в GPU...")
+        self.assertIn("#F59E0B", window.card_ai.status_label.styleSheet())
+        self.assertEqual(window.btn_download_llm.text(), "⏳ Загрузка в VRAM...")
+        self.assertFalse(window.btn_download_llm.isEnabled())
+
+        # 2. Состояние 'ready'
+        window.set_llm_status("ready")
+        self.assertEqual(window.card_ai.status_label.text(), "Jedi-3B (Готова / Warm)")
+        self.assertIn("#34D399", window.card_ai.status_label.styleSheet())
+        self.assertEqual(window.btn_download_llm.text(), "✓ Jedi-3B (1080p) готова")
+        self.assertFalse(window.btn_download_llm.isEnabled())
+
+        # 3. Состояние 'error'
+        window.set_llm_status("error")
+        self.assertEqual(window.card_ai.status_label.text(), "Ошибка загрузки")
+        self.assertIn("#EF4444", window.card_ai.status_label.styleSheet())
+        self.assertEqual(window.btn_download_llm.text(), "⚠ Ошибка Vision-модели")
+        self.assertTrue(window.btn_download_llm.isEnabled())
+
+        # 4. Состояние 'not_installed'
+        window.set_llm_status("not_installed")
+        self.assertEqual(window.card_ai.status_label.text(), "Fast-Path (0 мс, 0 МБ)")
+        self.assertIn("#60A5FA", window.card_ai.status_label.styleSheet())
+        self.assertEqual(window.btn_download_llm.text(), "📥 Скачать Jedi-3B (1080p)")
+        self.assertTrue(window.btn_download_llm.isEnabled())
+
+
+class TestTorchIsolation(unittest.TestCase):
+    """Тестирование архитектурной изоляции PyTorch от основного процесса."""
+
+    def test_torch_not_in_sys_modules(self) -> None:
+        """PyTorch не должен импортироваться в адресное пространство основного процесса."""
+        # Основной процесс UI и Fast-Path не должен зависеть от тяжелого Torch runtime
+        self.assertNotIn(
+            "torch",
+            sys.modules,
+            "Критическая ошибка архитектуры: PyTorch импортирован в основной процесс!"
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
 </file>
 
 <file path=".gitignore">
@@ -3770,6 +3788,29 @@ if __name__ == "__main__":
     sys.exit(main())
 </file>
 
+<file path="config/settings.json">
+{
+  "autostart_with_windows": false,
+  "start_minimized": false,
+  "close_behavior": "ask",
+  "default_activation_mode": "wake_word_and_copilot",
+  "wake_word_enabled": true,
+  "wake_word": "джарвис",
+  "audio_ducking_enabled": true,
+  "audio_ducking_level": 0.2,
+  "sound_cues_enabled": true,
+  "tts_enabled": true,
+  "tts_voice": "Microsoft Irina Desktop - Russian",
+  "tts_speed": 1.0,
+  "audio_device_index": 1,
+  "stt_model": "turbo",
+  "confirm_dangerous_actions": true,
+  "vision_max_steps": 8,
+  "vision_model": "xlangai/Jedi-3B-1080p",
+  "vision_auto_focus_browser": true
+}
+</file>
+
 <file path="core/audio_listener.py">
 """
 Модуль захвата звука и фильтрации речевой активности (VAD).
@@ -4084,29 +4125,6 @@ class AudioListener:
             self._record_done_event.set()
             self._wake_buffer.clear()
             self._wake_speech_active = False
-</file>
-
-<file path="config/settings.json">
-{
-  "autostart_with_windows": false,
-  "start_minimized": false,
-  "close_behavior": "ask",
-  "default_activation_mode": "wake_word_and_copilot",
-  "wake_word_enabled": true,
-  "wake_word": "джарвис",
-  "audio_ducking_enabled": true,
-  "audio_ducking_level": 0.2,
-  "sound_cues_enabled": true,
-  "tts_enabled": true,
-  "tts_voice": "Microsoft Irina Desktop - Russian",
-  "tts_speed": 1.0,
-  "audio_device_index": 1,
-  "stt_model": "turbo",
-  "confirm_dangerous_actions": true,
-  "vision_max_steps": 8,
-  "vision_model": "xlangai/Jedi-3B-1080p",
-  "vision_auto_focus_browser": true
-}
 </file>
 
 <file path="core/screen_tools.py">
@@ -5678,643 +5696,6 @@ pip install -e .[vision]
 Свободное распространение (Free / Open Source).
 </file>
 
-<file path="core/vision_agent.py">
-"""
-Мультимодальный автономный агент компьютерного управления (Vision Computer-Use Agent).
-Обеспечивает зрение (GDI BitBlt), рассуждение (Jedi-3B / Qwen2.5-VL 4-bit) и манипуляцию интерфейсом.
-Работает в изолированном фоновом процессе (Worker Process) для предотвращения конфликтов CUDA DLL и утечек VRAM.
-"""
-
-import ctypes
-import json
-import multiprocessing as mp
-import os
-import queue
-import re
-import sys
-import time
-import traceback
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
-from PIL import Image
-
-# Системный промпт для Computer-Use в Windows 11
-COMPUTER_USE_SYSTEM_PROMPT = """You are Jarvis, an autonomous Computer-Use AI agent running locally on Windows 11.
-Your task is to accomplish the user's goal by looking at the desktop screenshot and deciding the next action.
-
-Output your next action in strict JSON format inside a ```json ``` block with these keys:
-- "thought": A brief explanation in Russian of what you see and what you will do.
-- "action": One of ["click", "double_click", "right_click", "type", "press", "hotkey", "scroll", "wait", "ask_confirmation", "finish"]
-- "coordinate": [x, y] in range 0..1000 (relative to the full screen) for click/double_click/right_click actions.
-- "text": string to type (for "type" action).
-- "press_enter": boolean, whether to press Enter after typing.
-- "key": string key name for "press" (e.g. "enter", "esc", "tab", "backspace").
-- "keys": array of keys for "hotkey" (e.g. ["ctrl", "t"], ["win", "d"], ["ctrl", "w"]).
-- "direction": "down" or "up" for "scroll" action.
-- "message": final summary in Russian for "finish" or question for "ask_confirmation".
-
-Rules:
-1. Always look for search bars, icons, buttons, or input fields matching the user request.
-2. If the desired application or browser is visible on the screen or taskbar, click on it.
-3. If you need to search, first click the search field, then type the query.
-4. If the task is completed (e.g. the video started playing, or the window is open), return action "finish".
-5. For dangerous actions (deleting files, sending personal chat messages), return action "ask_confirmation".
-"""
-
-
-@dataclass
-class VisionAction:
-    """Структурированное действие модели."""
-    thought: str = ""
-    action_type: str = "wait"
-    coordinate: Optional[Tuple[int, int]] = None  # [x, y] в диапазоне 0..1000
-    text: str = ""
-    press_enter: bool = False
-    key: str = ""
-    keys: List[str] = field(default_factory=list)
-    direction: str = "down"
-    message: str = ""
-    raw_response: str = ""
-
-
-class ActionParser:
-    """Парсер ответов модели в структурированные команды управления."""
-
-    @staticmethod
-    def parse(response_text: str) -> VisionAction:
-        """Извлекает и валидирует JSON-действие из ответа модели."""
-        if not response_text:
-            return VisionAction(thought="Пустой ответ", action_type="finish", message="Ответ от модели не получен")
-
-        # Извлечение JSON из markdown-блока ```json ... ``` или сырого текста
-        json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", response_text, re.DOTALL)
-        raw_json = json_match.group(1) if json_match else None
-
-        if not raw_json:
-            # Поиск первого валидного JSON-объекта через нежадный regex (BUG-MEDIUM-5)
-            for match in re.finditer(r"(\{.*?\})", response_text, re.DOTALL):
-                candidate = match.group(1)
-                try:
-                    json.loads(candidate)
-                    raw_json = candidate
-                    break
-                except Exception:
-                    continue
-
-            if not raw_json:
-                bracket_match = re.search(r"(\{.*?\})", response_text, re.DOTALL)
-                raw_json = bracket_match.group(1) if bracket_match else None
-
-        if not raw_json:
-            return VisionAction(
-                thought="Не удалось распознать JSON",
-                action_type="finish",
-                message=response_text[:150],
-                raw_response=response_text
-            )
-
-        try:
-            data = json.loads(raw_json)
-        except Exception:
-            return VisionAction(
-                thought="Синтаксическая ошибка в JSON",
-                action_type="finish",
-                message="Ошибка декодирования команды",
-                raw_response=response_text
-            )
-
-        thought = str(data.get("thought", ""))
-        action_type = str(data.get("action", "wait")).lower().strip()
-        alias_map = {
-            "left_click": "click",
-            "leftclick": "click",
-            "left-click": "click",
-            "single_click": "click",
-            "rightclick": "right_click",
-            "right-click": "right_click",
-            "doubleclick": "double_click",
-            "double-click": "double_click",
-            "write": "type",
-            "input": "type",
-            "input_text": "type",
-            "done": "finish",
-            "complete": "finish",
-            "completed": "finish",
-            "terminate": "finish",
-            "exit": "finish",
-        }
-        action_type = alias_map.get(action_type, action_type)
-        message = str(data.get("message", ""))
-        text = str(data.get("text", ""))
-        press_enter = bool(data.get("press_enter", False))
-        key = str(data.get("key", "")).lower().strip()
-        keys_val = data.get("keys", [])
-        keys = [str(k).lower().strip() for k in keys_val] if isinstance(keys_val, list) else []
-        direction = str(data.get("direction", "down")).lower().strip()
-
-        coord: Optional[Tuple[int, int]] = None
-        raw_coord = data.get("coordinate")
-        if isinstance(raw_coord, (list, tuple)) and len(raw_coord) >= 2:
-            try:
-                x = int(raw_coord[0])
-                y = int(raw_coord[1])
-                coord = (x, y)
-            except (ValueError, TypeError):
-                coord = None
-
-        return VisionAction(
-            thought=thought,
-            action_type=action_type,
-            coordinate=coord,
-            text=text,
-            press_enter=press_enter,
-            key=key,
-            keys=keys,
-            direction=direction,
-            message=message,
-            raw_response=response_text
-        )
-
-
-class FailSafeMonitor:
-    """Контроллер экстренной остановки агента при вмешательстве пользователя."""
-
-    def __init__(self) -> None:
-        self.user32 = ctypes.windll.user32
-        self._last_cursor_pos: Optional[Tuple[int, int]] = None
-
-    def get_cursor_position(self) -> Tuple[int, int]:
-        """Возвращает текущие экранные координаты курсора мыши."""
-        class POINT(ctypes.Structure):
-            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-        pt = POINT()
-        self.user32.GetCursorPos(ctypes.byref(pt))
-        return pt.x, pt.y
-
-    def update_known_position(self, x: int, y: int) -> None:
-        """Запоминает координаты, куда агент сам переместил курсор."""
-        self._last_cursor_pos = (x, y)
-
-    def is_interrupted(self) -> Tuple[bool, str]:
-        """
-        Проверяет, нажал ли пользователь клавишу ESC или физически дернул мышь.
-        """
-        # 1. Проверка нажатия ESC (VK_ESCAPE = 0x1B)
-        if self.user32.GetAsyncKeyState(0x1B) & 0x8000:
-            return True, "Прервано пользователем (клавиша ESC)"
-
-        # 2. Проверка физического движения мыши
-        if self._last_cursor_pos is not None:
-            curr_x, curr_y = self.get_cursor_position()
-            prev_x, prev_y = self._last_cursor_pos
-            distance = ((curr_x - prev_x) ** 2 + (curr_y - prev_y) ** 2) ** 0.5
-            if distance > 40:  # Порог движения 40 пикселей
-                return True, "Прервано пользователем (движение мыши)"
-
-        return False, ""
-
-
-def _worker_process_loop(
-    task_queue: mp.Queue,
-    status_queue: mp.Queue,
-    model_name: str,
-    stop_event: Any,
-    cancel_event: Any = None,
-    fallback_model: str = "Qwen/Qwen2.5-VL-3B-Instruct"
-) -> None:
-    """
-    Основной цикл изолированного рабочего процесса Vision-агента.
-    Выполняется в отдельном адресном пространстве процесса Windows.
-    """
-    try:
-        import torch
-        from transformers import AutoProcessor, BitsAndBytesConfig, Qwen2_5_VLForConditionalGeneration
-        from core.screen_tools import ScreenController
-
-        screen = ScreenController()
-        failsafe = FailSafeMonitor()
-
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        # 4-битная квантизация BitsAndBytes NF4 (доступна только при наличии CUDA)
-        quant_config = (
-            BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.float16,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_use_double_quant=True
-            )
-            if torch.cuda.is_available()
-            else None
-        )
-
-        model = None
-        processor = None
-        candidates = [model_name]
-        if fallback_model and fallback_model != model_name:
-            candidates.append(fallback_model)
-
-        for candidate in candidates:
-            status_queue.put({"type": "log", "message": f"Загрузка модели {candidate} в 4-битном режиме (NF4)..."})
-            try:
-                try:
-                    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                        candidate,
-                        quantization_config=quant_config,
-                        device_map="auto",
-                        torch_dtype=torch.float16,
-                        low_cpu_mem_usage=True,
-                        local_files_only=True
-                    )
-                    processor = AutoProcessor.from_pretrained(candidate, local_files_only=True)
-                except Exception:
-                    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                        candidate,
-                        quantization_config=quant_config,
-                        device_map="auto",
-                        torch_dtype=torch.float16,
-                        low_cpu_mem_usage=True
-                    )
-                    processor = AutoProcessor.from_pretrained(candidate)
-                status_queue.put({"type": "ready", "message": f"Vision-модель {candidate} готова к работе"})
-                break
-            except Exception as e:
-                status_queue.put({"type": "log", "message": f"Не удалось загрузить {candidate}: {e}"})
-
-        if model is None or processor is None:
-            status_queue.put({"type": "error", "message": "Ошибка: не удалось загрузить ни основную, ни резервную модель"})
-            return
-
-        try:
-            while not stop_event.is_set():
-                try:
-                    task = task_queue.get(timeout=0.5)
-                except Exception:
-                    continue
-
-                if task.get("type") == "stop":
-                    break
-
-                if task.get("type") != "execute":
-                    continue
-
-                if cancel_event is not None:
-                    cancel_event.clear()
-
-                prompt = task.get("prompt", "")
-                max_steps = task.get("max_steps", 8)
-                history: List[str] = []
-                prev_image: Optional[Image.Image] = None
-
-                status_queue.put({"type": "task_started", "prompt": prompt})
-
-                task_success = False
-                final_message = ""
-                was_interrupted = False
-
-                for step in range(1, max_steps + 1):
-                    if stop_event.is_set():
-                        final_message = "Задача остановлена"
-                        was_interrupted = True
-                        break
-
-                    if cancel_event is not None and cancel_event.is_set():
-                        status_queue.put({"type": "interrupted", "reason": "Задача отменена пользователем"})
-                        final_message = "Задача отменена пользователем"
-                        was_interrupted = True
-                        break
-
-                    # 1. Проверка прерывания
-                    interrupted, reason = failsafe.is_interrupted()
-                    if interrupted:
-                        status_queue.put({"type": "interrupted", "reason": reason})
-                        final_message = reason
-                        was_interrupted = True
-                        break
-
-                    # 2. Захват экрана
-                    status_queue.put({"type": "step_status", "step": step, "status": "Захват экрана..."})
-                    image = screen.capture_screen()
-
-                    # Детекция изменений экрана после предыдущего действия
-                    screen_changed = True
-                    if prev_image is not None and prev_image.size == image.size:
-                        try:
-                            p1 = prev_image.resize((64, 64), Image.Resampling.NEAREST).convert("L")
-                            p2 = image.resize((64, 64), Image.Resampling.NEAREST).convert("L")
-                            diff = sum(abs(a - b) for a, b in zip(p1.getdata(), p2.getdata()))
-                            avg_diff = diff / (64 * 64)
-                            if avg_diff < 1.5:  # Среднее изменение яркости пикселей менее 1.5 из 255 (~0.6% от максимума)
-                                screen_changed = False
-                        except Exception:
-                            pass
-
-                    prev_image = image
-
-                    # Ресайз под динамическую сетку (кратно 28x28)
-                    img_w, img_h = image.size
-                    target_w = (img_w // 28) * 28
-                    target_h = (img_h // 28) * 28
-                    if target_w != img_w or target_h != img_h:
-                        image = image.resize((target_w, target_h), Image.Resampling.LANCZOS)
-
-                    # 3. Формирование контекста и вывод модели
-                    status_queue.put({"type": "step_status", "step": step, "status": "Анализ интерфейса нейросетью..."})
-
-                    history_str = "\n".join(f"Шаг {i+1}: {h}" for i, h in enumerate(history[-3:]))
-                    user_content = f"Цель пользователя: {prompt}\n"
-                    if history_str:
-                        user_content += f"Предыдущие выполненные действия:\n{history_str}\n"
-                    if not screen_changed and step > 1:
-                        user_content += "Внимание: после предыдущего шага экран не изменился. Элемент мог не сработать или быть перекрыт всплывающим окном/баннером. Закрой помеху или повтори действие точнее.\n"
-                    user_content += "Определи следующее действие в формате JSON."
-
-                    messages = [
-                        {"role": "system", "content": COMPUTER_USE_SYSTEM_PROMPT},
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "image", "image": image},
-                                {"type": "text", "text": user_content}
-                            ]
-                        }
-                    ]
-
-                    try:
-                        text_input = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-                        inputs = processor(
-                            text=[text_input],
-                            images=[image],
-                            padding=True,
-                            return_tensors="pt"
-                        ).to(device)
-
-                        with torch.inference_mode():
-                            generated_ids = model.generate(
-                                **inputs,
-                                max_new_tokens=256,
-                                do_sample=False
-                            )
-
-                        generated_ids_trimmed = [
-                            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-                        ]
-                        output_text = processor.batch_decode(
-                            generated_ids_trimmed,
-                            skip_special_tokens=True,
-                            clean_up_tokenization_spaces=False
-                        )[0]
-                    except Exception as e:
-                        status_queue.put({"type": "error", "message": f"Ошибка генерации модели: {e}"})
-                        final_message = f"Ошибка инференса: {e}"
-                        break
-
-                    action = ActionParser.parse(output_text)
-                    history.append(f"{action.action_type}: {action.thought}")
-
-                    status_queue.put({
-                        "type": "action_decided",
-                        "step": step,
-                        "thought": action.thought,
-                        "action": action.action_type,
-                        "coordinate": action.coordinate,
-                        "message": action.message
-                    })
-
-                    # 4. Обработка завершения или подтверждения
-                    if action.action_type == "finish":
-                        task_success = True
-                        final_message = action.message or "Задача успешно выполнена"
-                        break
-
-                    if action.action_type == "ask_confirmation":
-                        status_queue.put({"type": "confirmation_requested", "message": action.message})
-                        final_message = f"Требуется подтверждение: {action.message}"
-                        break
-
-                    # 5. Выполнение физического действия через Win32 API
-                    if action.action_type in ("click", "double_click", "right_click") and action.coordinate:
-                        norm_x, norm_y = action.coordinate
-                        screen_x, screen_y = screen.denormalize_coordinate(norm_x=norm_x, norm_y=norm_y)
-                        failsafe.update_known_position(screen_x, screen_y)
-
-                        status_queue.put({
-                            "type": "click_performed",
-                            "x": screen_x,
-                            "y": screen_y,
-                            "button": action.action_type
-                        })
-
-                        if action.action_type == "click":
-                            screen.click(screen_x, screen_y)
-                        elif action.action_type == "double_click":
-                            screen.double_click(screen_x, screen_y)
-                        elif action.action_type == "right_click":
-                            screen.click(screen_x, screen_y, button="right")
-
-                    elif action.action_type == "type":
-                        screen.type_text(action.text, press_enter=action.press_enter)
-
-                    elif action.action_type == "press" and action.key:
-                        screen.send_key(action.key)
-
-                    elif action.action_type == "hotkey" and action.keys:
-                        # Программные guardrails: предотвращение деструктивных шорткатов
-                        dangerous_combos = {("shift", "delete"), ("win", "r"), ("ctrl", "alt", "delete")}
-                        keys_lower = set(k.lower().strip() for k in action.keys)
-                        if any(all(k in keys_lower for k in combo) for combo in dangerous_combos):
-                            blocked_str = " + ".join(action.keys)
-                            status_queue.put({
-                                "type": "confirmation_requested",
-                                "message": f"Блокировка потенциально опасного сочетания клавиш: {blocked_str}"
-                            })
-                            final_message = f"Опасное действие отклонено: {blocked_str}"
-                            break
-                        screen.hotkey(action.keys)
-
-                    elif action.action_type == "scroll":
-                        screen.scroll(direction=action.direction, amount=3)
-
-                    # Короткая пауза для отрисовки интерфейса Windows
-                    time.sleep(0.3)
-
-                if not was_interrupted:
-                    status_queue.put({
-                        "type": "task_completed",
-                        "success": task_success,
-                        "message": final_message or "Достигнут лимит шагов"
-                    })
-
-        finally:
-            # Гарантированная выгрузка модели и освобождение VRAM при остановке или сбое
-            if model is not None:
-                del model
-            if processor is not None:
-                del processor
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-    except Exception as e:
-        tb = traceback.format_exc()
-        try:
-            log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
-            os.makedirs(log_dir, exist_ok=True)
-            with open(os.path.join(log_dir, "vision_worker.log"), "a", encoding="utf-8") as f:
-                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Сбой воркера Vision-агента: {e}\n{tb}\n")
-        except Exception:
-            pass
-        try:
-            status_queue.put_nowait({"type": "error", "message": f"Сбой воркера Vision-агента: {e}"})
-        except Exception:
-            pass
-
-
-class VisionAgentProcessManager:
-    """Менеджер жизненного цикла изолированного рабочего процесса Vision-агента."""
-
-    def __init__(
-        self,
-        model_name: str = "xlangai/Jedi-3B-1080p",
-        fallback_model: str = "Qwen/Qwen2.5-VL-3B-Instruct"
-    ) -> None:
-        self.model_name = model_name
-        self.fallback_model = fallback_model
-        self._process: Optional[mp.Process] = None
-        self._task_queue: Optional[mp.Queue] = None
-        self._status_queue: Optional[mp.Queue] = None
-        self._stop_event: Optional[Any] = None
-        self._cancel_event: Optional[Any] = None
-        self._is_ready: bool = False
-        self._is_busy: bool = False
-        self._start_time: Optional[float] = None
-        self._startup_timeout: float = 120.0
-
-    def is_running(self) -> bool:
-        """Проверяет, запущен ли рабочий процесс."""
-        return self._process is not None and self._process.is_alive()
-
-    def is_ready(self) -> bool:
-        """Готова ли модель к инференсу."""
-        return self.is_running() and self._is_ready
-
-    def is_loading(self) -> bool:
-        """Загружается ли модель в память GPU в данный момент."""
-        return self.is_running() and not self._is_ready
-
-    def is_busy(self) -> bool:
-        """Выполняет ли агент задачу в интерфейсе в данный момент."""
-        return self._is_busy
-
-    def start(self) -> bool:
-        """Запускает изолированный фоновый процесс с моделью."""
-        if self.is_running():
-            return True
-
-        self._task_queue = mp.Queue()
-        self._status_queue = mp.Queue()
-        self._stop_event = mp.Event()
-        self._cancel_event = mp.Event()
-        self._is_ready = False
-        self._is_busy = False
-        self._start_time = time.time()
-
-        self._process = mp.Process(
-            target=_worker_process_loop,
-            args=(self._task_queue, self._status_queue, self.model_name, self._stop_event, self._cancel_event, self.fallback_model),
-            daemon=True
-        )
-        self._process.start()
-        return True
-
-    def stop(self) -> None:
-        """Полная остановка процесса и гарантированное освобождение VRAM."""
-        if self._cancel_event is not None:
-            self._cancel_event.set()
-
-        if self._stop_event is not None:
-            self._stop_event.set()
-
-        if self._task_queue is not None:
-            try:
-                self._task_queue.put({"type": "stop"}, timeout=0.5)
-            except Exception:
-                pass
-
-        if self._process is not None and self._process.is_alive():
-            self._process.join(timeout=4.0)
-            if self._process.is_alive():
-                self._process.terminate()
-
-        self._process = None
-        self._task_queue = None
-        self._status_queue = None
-        self._stop_event = None
-        self._cancel_event = None
-        self._is_ready = False
-        self._is_busy = False
-        self._start_time = None
-
-    def abort_task(self) -> None:
-        """Экстренно прерывает выполнение текущей задачи агента без остановки рабочего процесса."""
-        self._is_busy = False
-        if self._cancel_event is not None:
-            self._cancel_event.set()
-
-    def poll_status(self) -> List[Dict[str, Any]]:
-        """Опрашивает очередь обновлений статуса от рабочего процесса."""
-        events: List[Dict[str, Any]] = []
-        if self._status_queue is None:
-            return events
-
-        while True:
-            try:
-                ev = self._status_queue.get_nowait()
-                ev_type = ev.get("type")
-                if ev_type == "ready":
-                    self._is_ready = True
-                    self._start_time = None
-                elif ev_type in ("task_completed", "interrupted", "error"):
-                    self._is_busy = False
-                    if ev_type == "error" and not self._is_ready:
-                        self._start_time = None
-                events.append(ev)
-            except Exception:
-                break
-
-        # Защитный таймаут ожидания готовности воркера (ARCH-3)
-        if not self._is_ready and self._start_time is not None:
-            if time.time() - self._start_time > self._startup_timeout:
-                events.append({
-                    "type": "error",
-                    "message": "Превышен таймаут загрузки Vision-модели (120 сек)"
-                })
-                self._start_time = None
-                self._is_busy = False
-                self.stop()
-
-        # Детекция аварийного завершения процесса воркера (CUDA OOM / сбой драйвера)
-        if self._is_busy and not self.is_running():
-            self._is_busy = False
-            events.append({
-                "type": "error",
-                "message": "Фоновый процесс Vision-агента неожиданно завершился (сбой GPU или памяти)"
-            })
-
-        return events
-
-    def execute_task(self, prompt: str, max_steps: int = 8) -> bool:
-        """Отправляет задачу на исполнение рабочему процессу."""
-        if not self.is_running() or self._task_queue is None:
-            return False
-
-        self._is_busy = True
-        self._task_queue.put({
-            "type": "execute",
-            "prompt": prompt,
-            "max_steps": max_steps
-        })
-        return True
-</file>
-
 <file path="core/decision_engine.py">
 """
 Модуль семантического роутинга и принятия решений (Decision Engine).
@@ -6677,6 +6058,1296 @@ class DecisionEngine:
                 }
 
         return None
+</file>
+
+<file path="core/vision_agent.py">
+"""
+Мультимодальный автономный агент компьютерного управления (Vision Computer-Use Agent).
+Обеспечивает зрение (GDI BitBlt), рассуждение (Jedi-3B / Qwen2.5-VL 4-bit) и манипуляцию интерфейсом.
+Работает в изолированном фоновом процессе (Worker Process) для предотвращения конфликтов CUDA DLL и утечек VRAM.
+"""
+
+import ctypes
+import json
+import multiprocessing as mp
+import os
+import queue
+import re
+import sys
+import time
+import traceback
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional, Tuple
+from PIL import Image
+
+# Системный промпт для Computer-Use в Windows 11
+COMPUTER_USE_SYSTEM_PROMPT = """You are Jarvis, an autonomous Computer-Use AI agent running locally on Windows 11.
+Your task is to accomplish the user's goal by looking at the desktop screenshot and deciding the next action.
+
+Output your next action in strict JSON format inside a ```json ``` block with these keys:
+- "thought": A brief explanation in Russian of what you see and what you will do.
+- "action": One of ["click", "double_click", "right_click", "type", "press", "hotkey", "scroll", "wait", "ask_confirmation", "finish"]
+- "coordinate": [x, y] in range 0..1000 (relative to the full screen) for click/double_click/right_click actions.
+- "text": string to type (for "type" action).
+- "press_enter": boolean, whether to press Enter after typing.
+- "key": string key name for "press" (e.g. "enter", "esc", "tab", "backspace").
+- "keys": array of keys for "hotkey" (e.g. ["ctrl", "t"], ["win", "d"], ["ctrl", "w"]).
+- "direction": "down" or "up" for "scroll" action.
+- "message": final summary in Russian for "finish" or question for "ask_confirmation".
+
+Rules:
+1. Always look for search bars, icons, buttons, or input fields matching the user request.
+2. If the desired application or browser is visible on the screen or taskbar, click on it.
+3. If you need to search, first click the search field, then type the query.
+4. If the task is completed (e.g. the video started playing, or the window is open), return action "finish".
+5. For dangerous actions (deleting files, sending personal chat messages), return action "ask_confirmation".
+"""
+
+
+@dataclass
+class VisionAction:
+    """Структурированное действие модели."""
+    thought: str = ""
+    action_type: str = "wait"
+    coordinate: Optional[Tuple[int, int]] = None  # [x, y] в диапазоне 0..1000
+    text: str = ""
+    press_enter: bool = False
+    key: str = ""
+    keys: List[str] = field(default_factory=list)
+    direction: str = "down"
+    message: str = ""
+    raw_response: str = ""
+
+
+class ActionParser:
+    """Парсер ответов модели в структурированные команды управления."""
+
+    @staticmethod
+    def parse(response_text: str) -> VisionAction:
+        """Извлекает и валидирует JSON-действие из ответа модели."""
+        if not response_text:
+            return VisionAction(thought="Пустой ответ", action_type="finish", message="Ответ от модели не получен")
+
+        # Извлечение JSON из markdown-блока ```json ... ``` или сырого текста
+        json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", response_text, re.DOTALL)
+        raw_json = json_match.group(1) if json_match else None
+
+        if not raw_json:
+            # Поиск первого валидного JSON-объекта через нежадный regex (BUG-MEDIUM-5)
+            for match in re.finditer(r"(\{.*?\})", response_text, re.DOTALL):
+                candidate = match.group(1)
+                try:
+                    json.loads(candidate)
+                    raw_json = candidate
+                    break
+                except Exception:
+                    continue
+
+            if not raw_json:
+                bracket_match = re.search(r"(\{.*?\})", response_text, re.DOTALL)
+                raw_json = bracket_match.group(1) if bracket_match else None
+
+        if not raw_json:
+            return VisionAction(
+                thought="Не удалось распознать JSON",
+                action_type="finish",
+                message=response_text[:150],
+                raw_response=response_text
+            )
+
+        try:
+            data = json.loads(raw_json)
+        except Exception:
+            return VisionAction(
+                thought="Синтаксическая ошибка в JSON",
+                action_type="finish",
+                message="Ошибка декодирования команды",
+                raw_response=response_text
+            )
+
+        thought = str(data.get("thought", ""))
+        action_type = str(data.get("action", "wait")).lower().strip()
+        alias_map = {
+            "left_click": "click",
+            "leftclick": "click",
+            "left-click": "click",
+            "single_click": "click",
+            "rightclick": "right_click",
+            "right-click": "right_click",
+            "doubleclick": "double_click",
+            "double-click": "double_click",
+            "write": "type",
+            "input": "type",
+            "input_text": "type",
+            "done": "finish",
+            "complete": "finish",
+            "completed": "finish",
+            "terminate": "finish",
+            "exit": "finish",
+        }
+        action_type = alias_map.get(action_type, action_type)
+        message = str(data.get("message", ""))
+        text = str(data.get("text", ""))
+        press_enter = bool(data.get("press_enter", False))
+        key = str(data.get("key", "")).lower().strip()
+        keys_val = data.get("keys", [])
+        keys = [str(k).lower().strip() for k in keys_val] if isinstance(keys_val, list) else []
+        direction = str(data.get("direction", "down")).lower().strip()
+
+        coord: Optional[Tuple[int, int]] = None
+        raw_coord = data.get("coordinate")
+        if isinstance(raw_coord, (list, tuple)) and len(raw_coord) >= 2:
+            try:
+                x = int(raw_coord[0])
+                y = int(raw_coord[1])
+                coord = (x, y)
+            except (ValueError, TypeError):
+                coord = None
+
+        return VisionAction(
+            thought=thought,
+            action_type=action_type,
+            coordinate=coord,
+            text=text,
+            press_enter=press_enter,
+            key=key,
+            keys=keys,
+            direction=direction,
+            message=message,
+            raw_response=response_text
+        )
+
+    @staticmethod
+    def is_dangerous_hotkey(keys: List[str]) -> bool:
+        """Проверяет сочетание клавиш на наличие в черном списке деструктивных команд Windows."""
+        if not keys:
+            return False
+        dangerous_combos = {("shift", "delete"), ("win", "r"), ("ctrl", "alt", "delete")}
+        alias_map = {"windows": "win", "control": "ctrl", "del": "delete"}
+        keys_normalized = set(alias_map.get(k.lower().strip(), k.lower().strip()) for k in keys)
+        return any(all(k in keys_normalized for k in combo) for combo in dangerous_combos)
+
+
+class FailSafeMonitor:
+    """Контроллер экстренной остановки агента при вмешательстве пользователя."""
+
+    def __init__(self) -> None:
+        self.user32 = ctypes.windll.user32
+        self._last_cursor_pos: Optional[Tuple[int, int]] = None
+
+    def get_cursor_position(self) -> Tuple[int, int]:
+        """Возвращает текущие экранные координаты курсора мыши."""
+        class POINT(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+        pt = POINT()
+        self.user32.GetCursorPos(ctypes.byref(pt))
+        return pt.x, pt.y
+
+    def update_known_position(self, x: int, y: int) -> None:
+        """Запоминает координаты, куда агент сам переместил курсор."""
+        self._last_cursor_pos = (x, y)
+
+    def is_interrupted(self) -> Tuple[bool, str]:
+        """
+        Проверяет, нажал ли пользователь клавишу ESC или физически дернул мышь.
+        """
+        # 1. Проверка нажатия ESC (VK_ESCAPE = 0x1B)
+        if self.user32.GetAsyncKeyState(0x1B) & 0x8000:
+            return True, "Прервано пользователем (клавиша ESC)"
+
+        # 2. Проверка физического движения мыши
+        if self._last_cursor_pos is not None:
+            curr_x, curr_y = self.get_cursor_position()
+            prev_x, prev_y = self._last_cursor_pos
+            distance = ((curr_x - prev_x) ** 2 + (curr_y - prev_y) ** 2) ** 0.5
+            if distance > 40:  # Порог движения 40 пикселей
+                return True, "Прервано пользователем (движение мыши)"
+
+        return False, ""
+
+
+def _worker_process_loop(
+    task_queue: mp.Queue,
+    status_queue: mp.Queue,
+    model_name: str,
+    stop_event: Any,
+    cancel_event: Any = None,
+    fallback_model: str = "Qwen/Qwen2.5-VL-3B-Instruct"
+) -> None:
+    """
+    Основной цикл изолированного рабочего процесса Vision-агента.
+    Выполняется в отдельном адресном пространстве процесса Windows.
+    """
+    try:
+        import torch
+        from transformers import AutoProcessor, BitsAndBytesConfig, Qwen2_5_VLForConditionalGeneration
+        from core.screen_tools import ScreenController
+
+        screen = ScreenController()
+        failsafe = FailSafeMonitor()
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        # 4-битная квантизация BitsAndBytes NF4 (доступна только при наличии CUDA)
+        quant_config = (
+            BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True
+            )
+            if torch.cuda.is_available()
+            else None
+        )
+
+        model = None
+        processor = None
+        candidates = [model_name]
+        if fallback_model and fallback_model != model_name:
+            candidates.append(fallback_model)
+
+        for candidate in candidates:
+            status_queue.put({"type": "log", "message": f"Загрузка модели {candidate} в 4-битном режиме (NF4)..."})
+            try:
+                try:
+                    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                        candidate,
+                        quantization_config=quant_config,
+                        device_map="auto",
+                        torch_dtype=torch.float16,
+                        low_cpu_mem_usage=True,
+                        local_files_only=True
+                    )
+                    processor = AutoProcessor.from_pretrained(candidate, local_files_only=True)
+                except Exception:
+                    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                        candidate,
+                        quantization_config=quant_config,
+                        device_map="auto",
+                        torch_dtype=torch.float16,
+                        low_cpu_mem_usage=True
+                    )
+                    processor = AutoProcessor.from_pretrained(candidate)
+                status_queue.put({"type": "ready", "message": f"Vision-модель {candidate} готова к работе"})
+                break
+            except Exception as e:
+                status_queue.put({"type": "log", "message": f"Не удалось загрузить {candidate}: {e}"})
+
+        if model is None or processor is None:
+            status_queue.put({"type": "error", "message": "Ошибка: не удалось загрузить ни основную, ни резервную модель"})
+            return
+
+        try:
+            while not stop_event.is_set():
+                try:
+                    task = task_queue.get(timeout=0.5)
+                except Exception:
+                    continue
+
+                if task.get("type") == "stop":
+                    break
+
+                if task.get("type") != "execute":
+                    continue
+
+                if cancel_event is not None:
+                    cancel_event.clear()
+
+                prompt = task.get("prompt", "")
+                max_steps = task.get("max_steps", 8)
+                history: List[str] = []
+                prev_image: Optional[Image.Image] = None
+
+                status_queue.put({"type": "task_started", "prompt": prompt})
+
+                task_success = False
+                final_message = ""
+                was_interrupted = False
+
+                for step in range(1, max_steps + 1):
+                    if stop_event.is_set():
+                        final_message = "Задача остановлена"
+                        was_interrupted = True
+                        break
+
+                    if cancel_event is not None and cancel_event.is_set():
+                        status_queue.put({"type": "interrupted", "reason": "Задача отменена пользователем"})
+                        final_message = "Задача отменена пользователем"
+                        was_interrupted = True
+                        break
+
+                    # 1. Проверка прерывания
+                    interrupted, reason = failsafe.is_interrupted()
+                    if interrupted:
+                        status_queue.put({"type": "interrupted", "reason": reason})
+                        final_message = reason
+                        was_interrupted = True
+                        break
+
+                    # 2. Захват экрана
+                    status_queue.put({"type": "step_status", "step": step, "status": "Захват экрана..."})
+                    image = screen.capture_screen()
+
+                    # Детекция изменений экрана после предыдущего действия
+                    screen_changed = True
+                    if prev_image is not None and prev_image.size == image.size:
+                        try:
+                            p1 = prev_image.resize((64, 64), Image.Resampling.NEAREST).convert("L")
+                            p2 = image.resize((64, 64), Image.Resampling.NEAREST).convert("L")
+                            diff = sum(abs(a - b) for a, b in zip(p1.getdata(), p2.getdata()))
+                            avg_diff = diff / (64 * 64)
+                            if avg_diff < 1.5:  # Среднее изменение яркости пикселей менее 1.5 из 255 (~0.6% от максимума)
+                                screen_changed = False
+                        except Exception:
+                            pass
+
+                    prev_image = image
+
+                    # Ресайз под динамическую сетку (кратно 28x28)
+                    img_w, img_h = image.size
+                    target_w = (img_w // 28) * 28
+                    target_h = (img_h // 28) * 28
+                    if target_w != img_w or target_h != img_h:
+                        image = image.resize((target_w, target_h), Image.Resampling.LANCZOS)
+
+                    # 3. Формирование контекста и вывод модели
+                    status_queue.put({"type": "step_status", "step": step, "status": "Анализ интерфейса нейросетью..."})
+
+                    history_str = "\n".join(f"Шаг {i+1}: {h}" for i, h in enumerate(history[-3:]))
+                    user_content = f"Цель пользователя: {prompt}\n"
+                    if history_str:
+                        user_content += f"Предыдущие выполненные действия:\n{history_str}\n"
+                    if not screen_changed and step > 1:
+                        user_content += "Внимание: после предыдущего шага экран не изменился. Элемент мог не сработать или быть перекрыт всплывающим окном/баннером. Закрой помеху или повтори действие точнее.\n"
+                    user_content += "Определи следующее действие в формате JSON."
+
+                    messages = [
+                        {"role": "system", "content": COMPUTER_USE_SYSTEM_PROMPT},
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image", "image": image},
+                                {"type": "text", "text": user_content}
+                            ]
+                        }
+                    ]
+
+                    try:
+                        text_input = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                        inputs = processor(
+                            text=[text_input],
+                            images=[image],
+                            padding=True,
+                            return_tensors="pt"
+                        ).to(device)
+
+                        with torch.inference_mode():
+                            generated_ids = model.generate(
+                                **inputs,
+                                max_new_tokens=256,
+                                do_sample=False
+                            )
+
+                        generated_ids_trimmed = [
+                            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+                        ]
+                        output_text = processor.batch_decode(
+                            generated_ids_trimmed,
+                            skip_special_tokens=True,
+                            clean_up_tokenization_spaces=False
+                        )[0]
+                    except Exception as e:
+                        status_queue.put({"type": "error", "message": f"Ошибка генерации модели: {e}"})
+                        final_message = f"Ошибка инференса: {e}"
+                        break
+
+                    action = ActionParser.parse(output_text)
+                    history.append(f"{action.action_type}: {action.thought}")
+
+                    status_queue.put({
+                        "type": "action_decided",
+                        "step": step,
+                        "thought": action.thought,
+                        "action": action.action_type,
+                        "coordinate": action.coordinate,
+                        "message": action.message
+                    })
+
+                    # 4. Обработка завершения или подтверждения
+                    if action.action_type == "finish":
+                        task_success = True
+                        final_message = action.message or "Задача успешно выполнена"
+                        break
+
+                    if action.action_type == "ask_confirmation":
+                        status_queue.put({"type": "confirmation_requested", "message": action.message})
+                        final_message = f"Требуется подтверждение: {action.message}"
+                        break
+
+                    # 5. Выполнение физического действия через Win32 API
+                    if action.action_type in ("click", "double_click", "right_click") and action.coordinate:
+                        norm_x, norm_y = action.coordinate
+                        screen_x, screen_y = screen.denormalize_coordinate(norm_x=norm_x, norm_y=norm_y)
+                        failsafe.update_known_position(screen_x, screen_y)
+
+                        status_queue.put({
+                            "type": "click_performed",
+                            "x": screen_x,
+                            "y": screen_y,
+                            "button": action.action_type
+                        })
+
+                        if action.action_type == "click":
+                            screen.click(screen_x, screen_y)
+                        elif action.action_type == "double_click":
+                            screen.double_click(screen_x, screen_y)
+                        elif action.action_type == "right_click":
+                            screen.click(screen_x, screen_y, button="right")
+
+                    elif action.action_type == "type":
+                        screen.type_text(action.text, press_enter=action.press_enter)
+
+                    elif action.action_type == "press" and action.key:
+                        screen.send_key(action.key)
+
+                    elif action.action_type == "hotkey" and action.keys:
+                        # Программные guardrails: предотвращение деструктивных шорткатов
+                        if ActionParser.is_dangerous_hotkey(action.keys):
+                            blocked_str = " + ".join(action.keys)
+                            status_queue.put({
+                                "type": "confirmation_requested",
+                                "message": f"Блокировка потенциально опасного сочетания клавиш: {blocked_str}"
+                            })
+                            final_message = f"Опасное действие отклонено: {blocked_str}"
+                            break
+                        screen.hotkey(action.keys)
+
+                    elif action.action_type == "scroll":
+                        screen.scroll(direction=action.direction, amount=3)
+
+                    # Короткая пауза для отрисовки интерфейса Windows
+                    time.sleep(0.3)
+
+                if not was_interrupted:
+                    status_queue.put({
+                        "type": "task_completed",
+                        "success": task_success,
+                        "message": final_message or "Достигнут лимит шагов"
+                    })
+
+        finally:
+            # Гарантированная выгрузка модели и освобождение VRAM при остановке или сбое
+            if model is not None:
+                del model
+            if processor is not None:
+                del processor
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    except Exception as e:
+        tb = traceback.format_exc()
+        try:
+            log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+            os.makedirs(log_dir, exist_ok=True)
+            with open(os.path.join(log_dir, "vision_worker.log"), "a", encoding="utf-8") as f:
+                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Сбой воркера Vision-агента: {e}\n{tb}\n")
+        except Exception:
+            pass
+        try:
+            status_queue.put_nowait({"type": "error", "message": f"Сбой воркера Vision-агента: {e}"})
+        except Exception:
+            pass
+
+
+class VisionAgentProcessManager:
+    """Менеджер жизненного цикла изолированного рабочего процесса Vision-агента."""
+
+    def __init__(
+        self,
+        model_name: str = "xlangai/Jedi-3B-1080p",
+        fallback_model: str = "Qwen/Qwen2.5-VL-3B-Instruct"
+    ) -> None:
+        self.model_name = model_name
+        self.fallback_model = fallback_model
+        self._process: Optional[mp.Process] = None
+        self._task_queue: Optional[mp.Queue] = None
+        self._status_queue: Optional[mp.Queue] = None
+        self._stop_event: Optional[Any] = None
+        self._cancel_event: Optional[Any] = None
+        self._is_ready: bool = False
+        self._is_busy: bool = False
+        self._start_time: Optional[float] = None
+        self._startup_timeout: float = 120.0
+
+    def is_running(self) -> bool:
+        """Проверяет, запущен ли рабочий процесс."""
+        return self._process is not None and self._process.is_alive()
+
+    def is_ready(self) -> bool:
+        """Готова ли модель к инференсу."""
+        return self.is_running() and self._is_ready
+
+    def is_loading(self) -> bool:
+        """Загружается ли модель в память GPU в данный момент."""
+        return self.is_running() and not self._is_ready
+
+    def is_busy(self) -> bool:
+        """Выполняет ли агент задачу в интерфейсе в данный момент."""
+        return self._is_busy
+
+    def start(self) -> bool:
+        """Запускает изолированный фоновый процесс с моделью."""
+        if self.is_running():
+            return True
+
+        self._task_queue = mp.Queue()
+        self._status_queue = mp.Queue()
+        self._stop_event = mp.Event()
+        self._cancel_event = mp.Event()
+        self._is_ready = False
+        self._is_busy = False
+        self._start_time = time.time()
+
+        self._process = mp.Process(
+            target=_worker_process_loop,
+            args=(self._task_queue, self._status_queue, self.model_name, self._stop_event, self._cancel_event, self.fallback_model),
+            daemon=True
+        )
+        self._process.start()
+        return True
+
+    def stop(self) -> None:
+        """Полная остановка процесса и гарантированное освобождение VRAM."""
+        if self._cancel_event is not None:
+            self._cancel_event.set()
+
+        if self._stop_event is not None:
+            self._stop_event.set()
+
+        if self._task_queue is not None:
+            try:
+                self._task_queue.put({"type": "stop"}, timeout=0.5)
+            except Exception:
+                pass
+
+        if self._process is not None and self._process.is_alive():
+            self._process.join(timeout=4.0)
+            if self._process.is_alive():
+                self._process.terminate()
+
+        self._process = None
+        self._task_queue = None
+        self._status_queue = None
+        self._stop_event = None
+        self._cancel_event = None
+        self._is_ready = False
+        self._is_busy = False
+        self._start_time = None
+
+    def abort_task(self) -> None:
+        """Экстренно прерывает выполнение текущей задачи агента без остановки рабочего процесса."""
+        self._is_busy = False
+        if self._cancel_event is not None:
+            self._cancel_event.set()
+
+    def poll_status(self) -> List[Dict[str, Any]]:
+        """Опрашивает очередь обновлений статуса от рабочего процесса."""
+        events: List[Dict[str, Any]] = []
+        if self._status_queue is None:
+            return events
+
+        while True:
+            try:
+                ev = self._status_queue.get_nowait()
+                ev_type = ev.get("type")
+                if ev_type == "ready":
+                    self._is_ready = True
+                    self._start_time = None
+                elif ev_type in ("task_completed", "interrupted", "error"):
+                    self._is_busy = False
+                    if ev_type == "error" and not self._is_ready:
+                        self._start_time = None
+                events.append(ev)
+            except Exception:
+                break
+
+        # Защитный таймаут ожидания готовности воркера (ARCH-3)
+        if not self._is_ready and self._start_time is not None:
+            if time.time() - self._start_time > self._startup_timeout:
+                events.append({
+                    "type": "error",
+                    "message": "Превышен таймаут загрузки Vision-модели (120 сек)"
+                })
+                self._start_time = None
+                self._is_busy = False
+                self.stop()
+
+        # Детекция аварийного завершения процесса воркера (CUDA OOM / сбой драйвера)
+        if self._is_busy and not self.is_running():
+            self._is_busy = False
+            events.append({
+                "type": "error",
+                "message": "Фоновый процесс Vision-агента неожиданно завершился (сбой GPU или памяти)"
+            })
+
+        return events
+
+    def execute_task(self, prompt: str, max_steps: int = 8) -> bool:
+        """Отправляет задачу на исполнение рабочему процессу."""
+        if not self.is_running() or self._task_queue is None:
+            return False
+
+        self._is_busy = True
+        self._task_queue.put({
+            "type": "execute",
+            "prompt": prompt,
+            "max_steps": max_steps
+        })
+        return True
+</file>
+
+<file path="tests/test_components.py">
+"""
+Комплексный автоматизированный тест компонентов Antigravity Voice.
+Проверяет все модули системы: DecisionEngine, AudioDucker, TextToSpeech,
+конфигурационные файлы, горячие клавиши и схемы команд.
+"""
+import os
+import json
+import unittest
+
+from core.decision_engine import DecisionEngine
+from core.audio_ducking import AudioDucker
+from core.text_to_speech import TextToSpeech
+from core.keyboard_hook import CopilotKeyHook
+
+class TestDecisionEngine(unittest.TestCase):
+    def setUp(self):
+        self.engine = DecisionEngine()
+
+    def test_antigravity_gui_open(self):
+        res = self.engine.parse_command("Открой Antigravity")
+        self.assertEqual(res["action"], "antigravity_gui")
+        self.assertEqual(res["target"], "open")
+
+    def test_antigravity_gui_prompt(self):
+        res = self.engine.parse_command("Джарвис, напиши в Antigravity создай новый проект на FastAPI")
+        self.assertEqual(res["action"], "antigravity_gui")
+        self.assertEqual(res["target"], "prompt")
+        self.assertIn("FastAPI", res["parameters"]["prompt"])
+
+    def test_antigravity_gui_new_chat(self):
+        res = self.engine.parse_command("Создай новый чат в Antigravity")
+        self.assertEqual(res["action"], "antigravity_gui")
+        self.assertEqual(res["target"], "new_chat")
+
+    def test_antigravity_cli_with_task(self):
+        res = self.engine.parse_command("Запусти Antigravity CLI git status")
+        self.assertEqual(res["action"], "antigravity_cli")
+        self.assertIn("git status", res["parameters"]["prompt"])
+
+    def test_model_status(self):
+        status = self.engine.get_model_status()
+        self.assertIn("Jedi-3B", status)
+        self.assertIsInstance(self.engine.is_llm_available(), bool)
+
+    def test_antigravity_cli_plain(self):
+        res = self.engine.parse_command("Открой терминал Antigravity")
+        self.assertEqual(res["action"], "antigravity_cli")
+
+    def test_volume_absolute(self):
+        res = self.engine.parse_command("Сделай громкость 45%")
+        self.assertEqual(res["action"], "set_volume")
+        self.assertEqual(res["target"], "absolute")
+        self.assertEqual(res["parameters"]["percent"], 45)
+
+    def test_volume_step_down(self):
+        res = self.engine.parse_command("Сделай потише")
+        self.assertEqual(res["action"], "set_volume")
+        self.assertEqual(res["target"], "step_down")
+
+    def test_volume_step_up(self):
+        res = self.engine.parse_command("Сделай громче")
+        self.assertEqual(res["action"], "set_volume")
+        self.assertEqual(res["target"], "step_up")
+
+    def test_volume_mute(self):
+        res = self.engine.parse_command("Выключи звук")
+        self.assertEqual(res["action"], "set_volume")
+        self.assertEqual(res["target"], "mute")
+
+    def test_media_control(self):
+        res = self.engine.parse_command("Следующий трек")
+        self.assertEqual(res["action"], "media_control")
+        self.assertEqual(res["target"], "next_track")
+
+    def test_web_search(self):
+        res = self.engine.parse_command("Найди в гугле погода Москва")
+        self.assertEqual(res["action"], "open_url")
+        self.assertIn("google.com/search?q=", res["target"])
+        import urllib.parse
+        self.assertIn("погода", urllib.parse.unquote(res["target"]))
+
+    def test_youtube_search_complex(self):
+        res = self.engine.parse_command("Открой, пожалуйста, ютубчик и включи там видео мармука.")
+        self.assertEqual(res["action"], "vision_agent")
+        self.assertIn("мармука", res["parameters"]["prompt"])
+
+    def test_vk_open_with_punctuation(self):
+        res = self.engine.parse_command("Открой ВК, пожалуйста.")
+        self.assertEqual(res["action"], "open_url")
+        self.assertEqual(res["target"], "https://vk.com")
+
+    def test_domain_in_browser(self):
+        res = self.engine.parse_command("Открой vk.com в браузере.")
+        self.assertEqual(res["action"], "open_url")
+        self.assertEqual(res["target"], "https://vk.com")
+
+    def test_dangerous_action_confirmation(self):
+        res = self.engine.parse_command("Выключи ноутбук")
+        self.assertEqual(res["action"], "system_action")
+        self.assertEqual(res["target"], "shutdown")
+        self.assertTrue(res["parameters"].get("dangerous"))
+
+    def test_youtube_direct_play_latest(self):
+        # Сложная мультимодальная инструкция направляется в VisionAgent
+        res = self.engine.parse_command("На ютуб включить последнее видео мармука")
+        self.assertEqual(res["action"], "vision_agent")
+        self.assertIn("мармук", res["parameters"]["prompt"])
+
+    def test_youtube_direct_play_without_keyword_youtube(self):
+        # Сложная мультимодальная инструкция направляется в VisionAgent
+        res = self.engine.parse_command("Включи последнее видео мармука")
+        self.assertEqual(res["action"], "vision_agent")
+        self.assertIn("мармук", res["parameters"]["prompt"])
+
+    def test_subpage_vk_messages(self):
+        # Проверка открытия страницы сообщений ВК
+        res = self.engine.parse_command("Открой сообщения вк")
+        self.assertEqual(res["action"], "open_url")
+        self.assertEqual(res["target"], "https://vk.com/im")
+
+    def test_subpage_vk_messages_with_preposition(self):
+        # Проверка открытия сообщений ВК с предлогом («в вк»)
+        res = self.engine.parse_command("Перейди в сообщения в вк")
+        self.assertEqual(res["action"], "open_url")
+        self.assertEqual(res["target"], "https://vk.com/im")
+
+    def test_subpage_youtube_subscriptions(self):
+        # Проверка открытия подписок на YouTube
+        res = self.engine.parse_command("Открой подписки на ютубе")
+        self.assertEqual(res["action"], "open_url")
+        self.assertEqual(res["target"], "https://www.youtube.com/feed/subscriptions")
+
+    def test_subpage_github_trending(self):
+        # Проверка открытия трендов GitHub
+        res = self.engine.parse_command("Покажи тренды гитхаб")
+        self.assertEqual(res["action"], "open_url")
+        self.assertEqual(res["target"], "https://github.com/trending")
+
+    def test_subpage_mail_inbox(self):
+        # Проверка открытия входящих в почте
+        res = self.engine.parse_command("Открой входящие в почте")
+        self.assertEqual(res["action"], "open_url")
+        self.assertEqual(res["target"], "https://mail.google.com/mail/u/0/#inbox")
+
+    def test_universal_site_search_kinopoisk(self):
+        # Проверка автономного управления через Vision-агента
+        res = self.engine.parse_command("На Кинопоиске найди фильм Начало")
+        self.assertEqual(res["action"], "vision_agent")
+        self.assertIn("Начало", res["parameters"]["prompt"])
+
+    def test_universal_site_search_avito(self):
+        # Проверка автономного управления через Vision-агента
+        res = self.engine.parse_command("Найди на Авито велосипед")
+        self.assertEqual(res["action"], "vision_agent")
+        self.assertIn("велосипед", res["parameters"]["prompt"])
+
+    def test_universal_site_search_wikipedia(self):
+        # Проверка автономного управления через Vision-агента
+        res = self.engine.parse_command("В Википедии найди квантовую физику")
+        self.assertEqual(res["action"], "vision_agent")
+        self.assertIn("квантовую физику", res["parameters"]["prompt"])
+
+    def test_universal_site_search_ozon(self):
+        # Проверка автономного управления через Vision-агента
+        res = self.engine.parse_command("На Озоне найди кофеварку")
+        self.assertEqual(res["action"], "vision_agent")
+        self.assertIn("кофеварку", res["parameters"]["prompt"])
+
+    def test_universal_site_search_wildberries(self):
+        # Проверка автономного управления через Vision-агента
+        res = self.engine.parse_command("На wildberries найди кроссовки")
+        self.assertEqual(res["action"], "vision_agent")
+        self.assertIn("кроссовки", res["parameters"]["prompt"])
+
+    def test_window_control_close(self):
+        # Проверка закрытия приложений
+        res = self.engine.parse_command("Закрой блокнот")
+        self.assertEqual(res["action"], "window_control")
+        self.assertEqual(res["target"], "close")
+        self.assertEqual(res["parameters"]["app_name"], "блокнот")
+
+    def test_window_control_minimize_and_restore(self):
+        # Проверка сворачивания и рабочего стола
+        res_min = self.engine.parse_command("Сверни блокнот")
+        self.assertEqual(res_min["action"], "window_control")
+        self.assertEqual(res_min["target"], "minimize")
+
+        res_desktop = self.engine.parse_command("Покажи рабочий стол")
+        self.assertEqual(res_desktop["action"], "window_control")
+        self.assertEqual(res_desktop["target"], "minimize_all")
+
+        res_max = self.engine.parse_command("Разверни на весь экран")
+        self.assertEqual(res_max["action"], "window_control")
+        self.assertEqual(res_max["target"], "maximize")
+
+    def test_in_app_typing(self):
+        # Проверка ввода текста в приложение
+        res = self.engine.parse_command("В блокноте напиши купить молоко и хлеб")
+        self.assertEqual(res["action"], "app_type")
+        self.assertEqual(res["target"], "type")
+        self.assertEqual(res["parameters"]["app_name"], "блокнот")
+        self.assertEqual(res["parameters"]["text"], "купить молоко и хлеб")
+
+    def test_in_app_search_telegram(self):
+        # Поиск внутри приложения направляется в Vision-агента
+        res = self.engine.parse_command("В телеграме найди проект")
+        self.assertEqual(res["action"], "vision_agent")
+        self.assertIn("проект", res["parameters"]["prompt"])
+
+    def test_app_tabs_hotkeys(self):
+        # Проверка горячих клавиш вкладок
+        res_tab = self.engine.parse_command("Новая вкладка")
+        self.assertEqual(res_tab["action"], "app_hotkey")
+        self.assertEqual(res_tab["target"], "new_tab")
+
+        res_close = self.engine.parse_command("Закрой вкладку")
+        self.assertEqual(res_close["action"], "app_hotkey")
+        self.assertEqual(res_close["target"], "close_tab")
+
+
+
+
+from core.executor import CommandExecutor
+from core.keyboard_hook import CopilotKeyHook, VK_F23, VK_F23_ALT
+
+class TestCoreModules(unittest.TestCase):
+    def test_executor_vision_agent(self):
+        from unittest.mock import MagicMock
+        mock_vm = MagicMock()
+        mock_vm.is_running.return_value = True
+        mock_vm.is_loading.return_value = False
+        mock_vm.execute_task.return_value = True
+
+        executor = CommandExecutor(vision_manager=mock_vm)
+        cmd = {"action": "vision_agent", "parameters": {"prompt": "На ютубе найди Мармука"}}
+        ok, msg = executor.execute(cmd)
+        self.assertTrue(ok)
+        self.assertEqual(msg, "Анализирую экран...")
+        mock_vm.execute_task.assert_called_once_with("На ютубе найди Мармука", max_steps=8)
+
+    def test_audio_ducker_init(self):
+        ducker = AudioDucker()
+        self.assertFalse(ducker._is_ducked)
+
+    def test_audio_ducker_duck_and_unduck(self):
+        ducker = AudioDucker()
+        import unittest.mock as mock
+        mock_endpoint = mock.MagicMock()
+        mock_endpoint.GetMasterVolumeLevelScalar.return_value = 0.8
+
+        with mock.patch.object(ducker, "_get_volume_endpoint", return_value=mock_endpoint):
+            ducker.duck(duck_factor=0.25)
+            self.assertTrue(ducker._is_ducked)
+            self.assertAlmostEqual(ducker._previous_volume, 0.8)
+            mock_endpoint.SetMasterVolumeLevelScalar.assert_called_with(0.2, None)
+
+            ducker.unduck()
+            self.assertFalse(ducker._is_ducked)
+            self.assertIsNone(ducker._previous_volume)
+            mock_endpoint.SetMasterVolumeLevelScalar.assert_called_with(0.8, None)
+
+    def test_audio_ducker_duck_when_muted_remains_zero(self):
+        """Если системная громкость равна 0 (Mute), ducking оставляет 0.0 и не включает звук."""
+        ducker = AudioDucker()
+        import unittest.mock as mock
+        mock_endpoint = mock.MagicMock()
+        mock_endpoint.GetMasterVolumeLevelScalar.return_value = 0.0
+
+        with mock.patch.object(ducker, "_get_volume_endpoint", return_value=mock_endpoint):
+            ducker.duck(duck_factor=0.25)
+            self.assertTrue(ducker._is_ducked)
+            self.assertEqual(ducker._previous_volume, 0.0)
+            mock_endpoint.SetMasterVolumeLevelScalar.assert_called_with(0.0, None)
+
+    def test_tts_init(self):
+        tts = TextToSpeech(speed=1)
+        self.assertEqual(tts.speed, 1)
+
+    def test_keyboard_hook_init(self):
+        hook = CopilotKeyHook()
+        self.assertFalse(hook._is_running)
+        self.assertEqual(VK_F23, 0x86)
+        self.assertEqual(VK_F23_ALT, 0x8E)
+
+    def test_keyboard_hook_windows_key_not_blocked(self):
+        hook = CopilotKeyHook()
+        class FakeData:
+            vkCode = 0x5B  # VK_LWIN
+        # WM_KEYDOWN for Windows key must ALWAYS return True (never blocked)
+        res = hook._win32_event_filter(0x0100, FakeData())
+        self.assertTrue(res)
+        # WM_KEYUP for Windows key must also return True
+        res_up = hook._win32_event_filter(0x0101, FakeData())
+        self.assertTrue(res_up)
+
+    def test_keyboard_hook_copilot_blocked(self):
+        clicked = []
+        hook = CopilotKeyHook(on_click=lambda: clicked.append(True))
+        class FakeDataF23:
+            vkCode = 0x86  # VK_F23
+        # WM_KEYDOWN for Copilot key must return False (intercepted and blocked)
+        res_down = hook._win32_event_filter(0x0100, FakeDataF23())
+        self.assertFalse(res_down)
+        # WM_KEYUP for Copilot key must return False
+        res_up = hook._win32_event_filter(0x0101, FakeDataF23())
+        self.assertFalse(res_up)
+
+    def test_executor_general_answer(self):
+        executor = CommandExecutor()
+        cmd = {"action": "general_answer", "target": "answer", "parameters": {"text": "Тестовый ответ"}}
+        ok, msg = executor.execute(cmd)
+        self.assertTrue(ok)
+        self.assertEqual(msg, "Тестовый ответ")
+
+    def test_executor_dangerous_action_confirmation(self):
+        executor = CommandExecutor()
+        cmd = {"action": "system_action", "target": "shutdown", "parameters": {"dangerous": True}}
+        ok, msg = executor.execute(cmd)
+        self.assertFalse(ok)
+        self.assertEqual(msg, "CONFIRM_REQUIRED")
+
+    def test_executor_antigravity_config(self):
+        executor = CommandExecutor()
+        self.assertIn("Antigravity", executor.gui_window_names)
+        self.assertEqual(executor.cli_executable, "agy")
+
+    def test_executor_launch_app_url_redirection(self):
+        executor = CommandExecutor()
+        cmd = {"action": "launch_app", "target": "vk.com", "parameters": {}}
+        import unittest.mock as mock
+        with mock.patch("webbrowser.open") as mock_open:
+            ok, msg = executor.execute(cmd)
+            self.assertTrue(ok)
+            mock_open.assert_called_once_with("https://vk.com")
+
+    def test_executor_open_url_direct_play(self):
+        executor = CommandExecutor()
+        cmd = {
+            "action": "open_url",
+            "target": "https://www.youtube.com/results?search_query=мармук",
+            "parameters": {"query": "мармук", "direct_play": True, "sort_by_date": True}
+        }
+        import unittest.mock as mock
+        with mock.patch.object(executor, "_resolve_youtube_video", return_value="https://www.youtube.com/watch?v=EjavzU6L2YM") as mock_res:
+            with mock.patch("webbrowser.open") as mock_open:
+                ok, msg = executor.execute(cmd)
+                self.assertTrue(ok)
+                mock_res.assert_called_once_with("мармук", sort_by_date=True)
+                mock_open.assert_called_once_with("https://www.youtube.com/watch?v=EjavzU6L2YM")
+                self.assertIn("YouTube", msg)
+
+    def test_executor_resolve_youtube_video_mocked(self):
+        executor = CommandExecutor()
+        import io
+        import unittest.mock as mock
+        class MockResp(io.BytesIO):
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+
+        mock_response = MockResp(b'some html "videoId":"TestVideo11" and more html')
+        with mock.patch("urllib.request.urlopen", return_value=mock_response):
+            video_url = executor._resolve_youtube_video("тест")
+            self.assertEqual(video_url, "https://www.youtube.com/watch?v=TestVideo11")
+
+
+    def test_executor_resolve_youtube_video_fallback_on_error(self):
+        executor = CommandExecutor()
+        import unittest.mock as mock
+        with mock.patch("urllib.request.urlopen", side_effect=Exception("Network error")):
+            fallback_url = executor._resolve_youtube_video("тест", sort_by_date=True)
+            self.assertIn("youtube.com/results?search_query=", fallback_url)
+            self.assertIn("sp=CAI", fallback_url)
+
+    def test_desktop_app_controller_launch_or_focus_existing(self):
+        from core.app_controller import DesktopAppController
+        ctrl = DesktopAppController()
+        import unittest.mock as mock
+        with mock.patch.object(ctrl, "find_window", return_value=12345):
+            with mock.patch.object(ctrl, "focus_window", return_value=True):
+                ok, msg = ctrl.launch_or_focus("блокнот")
+                self.assertTrue(ok)
+                self.assertIn("Переключено на", msg)
+
+    def test_desktop_app_controller_launch_new(self):
+        from core.app_controller import DesktopAppController
+        ctrl = DesktopAppController()
+        import unittest.mock as mock
+        with mock.patch.object(ctrl, "find_window", side_effect=[None, 12345]):
+            with mock.patch.object(ctrl, "focus_window", return_value=True):
+                with mock.patch("os.startfile") as mock_start:
+                    ok, msg = ctrl.launch_or_focus("блокнот", "notepad.exe")
+                    self.assertTrue(ok)
+                    self.assertIn("Запущено", msg)
+                    mock_start.assert_called_once_with("notepad.exe")
+
+    def test_executor_window_control_execution(self):
+        executor = CommandExecutor()
+        cmd = {"action": "window_control", "target": "close", "parameters": {"app_name": "блокнот"}}
+        import unittest.mock as mock
+        with mock.patch.object(executor.app_controller, "close_app", return_value=(True, "Закрыто: блокнот")) as mock_close:
+            ok, msg = executor.execute(cmd)
+            self.assertTrue(ok)
+            mock_close.assert_called_once_with("блокнот")
+
+    def test_executor_app_type_execution(self):
+        executor = CommandExecutor()
+        cmd = {
+            "action": "app_type",
+            "target": "type",
+            "parameters": {"app_name": "блокнот", "text": "купить молоко", "submit": False, "search_mode": False}
+        }
+        import unittest.mock as mock
+        with mock.patch.object(executor.app_controller, "type_into_app", return_value=(True, "Введено в блокнот")) as mock_type:
+            ok, msg = executor.execute(cmd)
+            self.assertTrue(ok)
+            mock_type.assert_called_once_with("блокнот", "купить молоко", submit=False, search_mode=False)
+
+    def test_executor_app_hotkey_execution(self):
+        executor = CommandExecutor()
+        cmd = {"action": "app_hotkey", "target": "new_tab", "parameters": {"app_name": "браузер"}}
+        import unittest.mock as mock
+        with mock.patch.object(executor.app_controller, "send_app_hotkey", return_value=(True, "Новая вкладка")) as mock_hk:
+            ok, msg = executor.execute(cmd)
+            self.assertTrue(ok)
+            mock_hk.assert_called_once_with("браузер", "new_tab")
+
+class TestConfigs(unittest.TestCase):
+
+
+    def test_settings_integrity(self):
+        config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "settings.json")
+        self.assertTrue(os.path.exists(config_path))
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertIn("default_activation_mode", data)
+        self.assertIn("close_behavior", data)
+        self.assertIn("audio_ducking_enabled", data)
+        self.assertIn("wake_word_enabled", data)
+
+    def test_commands_integrity(self):
+        commands_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "commands.json")
+        self.assertTrue(os.path.exists(commands_path))
+        with open(commands_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertIn("apps", data)
+        self.assertIn("urls", data)
+        self.assertIn("antigravity", data)
+
+    def test_commands_dynamic_loading(self):
+        engine = DecisionEngine()
+        self.assertIn("почта", engine.url_map)
+        res = engine.parse_command("Открой почту")
+        self.assertEqual(res["action"], "open_url")
+        self.assertEqual(res["target"], "https://mail.google.com")
+
+    def test_settings_wake_word(self):
+        config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "settings.json")
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertIn("wake_word", data)
+        self.assertEqual(data["wake_word"].lower(), "джарвис")
+
+    def test_decision_engine_load_model_failure(self):
+        fake_engine = DecisionEngine()
+        import unittest.mock as mock
+        with mock.patch.object(fake_engine, "is_llm_available", return_value=False):
+            self.assertFalse(fake_engine.load_model())
+
+class TestMainWindowFeatures(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import sys
+        from PyQt6.QtWidgets import QApplication
+        cls.app = QApplication.instance() or QApplication(sys.argv)
+
+    def test_main_window_check_all_and_wake_word(self):
+        from gui.main_window import MainWindow
+        config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "settings.json")
+        window = MainWindow(config_path)
+
+        # 1. Проверка наличия кнопки полной проверки всех систем
+        self.assertTrue(hasattr(window, "btn_check_all_systems"))
+        self.assertIn("Проверить все системы", window.btn_check_all_systems.text())
+
+        # 2. Проверка поля настройки слова-триггера
+        self.assertTrue(hasattr(window, "txt_wake_word"))
+        self.assertEqual(window.txt_wake_word.text().lower(), "джарвис")
+
+        # 3. Проверка изменения слова-триггера и сброса по умолчанию
+        window.txt_wake_word.setText("Компьютер")
+        self.assertEqual(window.settings.get("wake_word"), "компьютер")
+
+        window._reset_wake_word()
+        self.assertEqual(window.settings.get("wake_word"), "джарвис")
+        self.assertEqual(window.txt_wake_word.text(), "Джарвис")
+
+        # 4. Проверка обновления статусной карточки
+        window.update_status_card("mic", "Тестовый статус", "#34D399")
+        self.assertEqual(window.card_mic.status_label.text(), "Тестовый статус")
+
+class TestTrayManager(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import sys
+        from PyQt6.QtWidgets import QApplication
+        cls.app = QApplication.instance() or QApplication(sys.argv)
+
+    def setUp(self):
+        from gui.tray_manager import TrayManager
+        self.tray = TrayManager()
+
+    def tearDown(self):
+        self.tray.stop()
+
+    def test_state_idle(self):
+        self.tray.set_state("idle")
+        self.assertEqual(self.tray._current_state, "idle")
+        self.assertEqual(self.tray.tray_icon.toolTip(), "Antigravity Voice: Готов к работе")
+        self.assertEqual(self.tray.status_action.text(), "Статус: Активен (Готов)")
+        self.assertEqual(self.tray.action_toggle.text(), "Остановить ассистента (освободить VRAM)")
+        self.assertFalse(self.tray._anim_timer.isActive())
+
+    def test_state_listening(self):
+        self.tray.set_state("listening")
+        self.assertEqual(self.tray._current_state, "listening")
+        self.assertEqual(self.tray.tray_icon.toolTip(), "Antigravity Voice: Запись речи...")
+        self.assertEqual(self.tray.status_action.text(), "Статус: Запись речи...")
+        self.assertEqual(self.tray.action_toggle.text(), "Остановить ассистента (освободить VRAM)")
+        self.assertTrue(self.tray._anim_timer.isActive())
+
+    def test_state_working(self):
+        self.tray.set_state("working")
+        self.assertEqual(self.tray._current_state, "working")
+        self.assertEqual(self.tray.tray_icon.toolTip(), "Antigravity Voice: Vision-агент анализирует экран...")
+        self.assertEqual(self.tray.status_action.text(), "Статус: Анализ экрана...")
+        self.assertEqual(self.tray.action_toggle.text(), "Остановить ассистента (освободить VRAM)")
+        self.assertTrue(self.tray._anim_timer.isActive())
+
+    def test_state_stopped(self):
+        self.tray.set_state("stopped")
+        self.assertEqual(self.tray._current_state, "stopped")
+        self.assertEqual(self.tray.tray_icon.toolTip(), "Antigravity Voice: Остановлен (0 МБ VRAM)")
+        self.assertEqual(self.tray.status_action.text(), "Статус: Остановлен (0 МБ VRAM)")
+        self.assertEqual(self.tray.action_toggle.text(), "Запустить ассистента")
+        self.assertFalse(self.tray._anim_timer.isActive())
+
+    def test_update_status(self):
+        self.tray.update_status(False)
+        self.assertEqual(self.tray._current_state, "stopped")
+        self.assertFalse(self.tray._anim_timer.isActive())
+
+        self.tray.update_status(True)
+        self.assertEqual(self.tray._current_state, "idle")
+        self.assertFalse(self.tray._anim_timer.isActive())
+
+
+class TestRegressionsAndProblemFixes(unittest.TestCase):
+    """Регрессионные тесты дефектов и системных интеграций."""
+
+    def setUp(self):
+        from core.executor import CommandExecutor
+        self.engine = DecisionEngine()
+        self.executor = CommandExecutor()
+
+    def test_volume_unmute(self):
+        """Команда unmute корректно обрабатывается в _handle_volume."""
+        from unittest.mock import patch
+        with patch.object(self.executor, "_send_key") as mock_send_key:
+            success, msg = self.executor._handle_volume("unmute", {})
+            self.assertTrue(success)
+            self.assertEqual(msg, "Звук включен")
+            mock_send_key.assert_called_once()
+
+    def test_lock_workstation(self):
+        """Команда lock_workstation блокирует компьютер через ctypes."""
+        from unittest.mock import patch
+        with patch("ctypes.windll.user32.LockWorkStation", return_value=1) as mock_lock:
+            cmd = {
+                "action": "system_action",
+                "target": "lock_workstation",
+                "parameters": {}
+            }
+            success, msg = self.executor.execute(cmd)
+            self.assertTrue(success)
+            self.assertEqual(msg, "Компьютер заблокирован")
+            mock_lock.assert_called_once()
+
+    def test_github_repositories_url(self):
+        """URL репозиториев github валиден."""
+        cmd = self.engine.parse_command("Открой репозитории гитхаб")
+        self.assertEqual(cmd["action"], "open_url")
+        self.assertEqual(cmd["target"], "https://github.com/settings/repositories")
+
+    def test_vision_auto_focus_browser_setting(self):
+        """Настройка vision_auto_focus_browser=False отключает автофокус браузера."""
+        from unittest.mock import MagicMock, patch
+        from core.executor import CommandExecutor
+        executor_no_autofocus = CommandExecutor(
+            vision_manager=MagicMock(),
+            settings={"vision_auto_focus_browser": False}
+        )
+        with patch.object(executor_no_autofocus.app_controller, "launch_or_focus") as mock_focus:
+            cmd = {
+                "action": "vision_agent",
+                "target": "computer_use",
+                "parameters": {"prompt": "На ютубе включи музыку"}
+            }
+            executor_no_autofocus._handle_vision_agent(cmd)
+            mock_focus.assert_not_called()
+
+        executor_with_autofocus = CommandExecutor(
+            vision_manager=MagicMock(),
+            settings={"vision_auto_focus_browser": True}
+        )
+        with patch.object(executor_with_autofocus.app_controller, "launch_or_focus") as mock_focus:
+            cmd = {
+                "action": "vision_agent",
+                "target": "computer_use",
+                "parameters": {"prompt": "На ютубе включи музыку"}
+            }
+            executor_with_autofocus._handle_vision_agent(cmd)
+            mock_focus.assert_called_once()
+
+    def test_multi_word_urls_from_commands_json(self):
+        """Составные URL из commands.json корректно обрабатываются Fast-Path."""
+        vk_music = self.engine.parse_command("Открой музыка вк")
+        self.assertEqual(vk_music["action"], "open_url")
+        self.assertEqual(vk_music["target"], "https://vk.com/audios")
+
+        vk_news = self.engine.parse_command("Перейди на новости вк")
+        self.assertEqual(vk_news["action"], "open_url")
+        self.assertEqual(vk_news["target"], "https://vk.com/feed")
+
+        yt_history = self.engine.parse_command("Открой история ютуб")
+        self.assertEqual(yt_history["action"], "open_url")
+        self.assertEqual(yt_history["target"], "https://www.youtube.com/feed/history")
+
+
+if __name__ == "__main__":
+    unittest.main()
 </file>
 
 <file path="main.py">
@@ -7496,34 +8167,39 @@ class AppCoordinator(QObject):
         self.log(f"Spotlight: «{text}»")
 
         def worker():
-            command = self.decision_engine.parse_command(text)
-            is_vision = command.get("action") == "vision_agent"
-            success, msg = self.executor.execute(command)
+            try:
+                command = self.decision_engine.parse_command(text)
+                is_vision = command.get("action") == "vision_agent"
+                success, msg = self.executor.execute(command)
 
-            if is_vision:
-                if success:
-                    self.pill_executing_signal.emit(msg or "Анализирую экран...")
+                if is_vision:
+                    if success:
+                        self.pill_executing_signal.emit(msg or "Анализирую экран...")
+                    else:
+                        self._play_sound("error")
+                        self.pill_error_signal.emit(msg)
+                    return
+
+                if msg == "CONFIRM_REQUIRED":
+                    if self.window.settings.get("confirm_dangerous_actions", True):
+                        self.confirm_action_signal.emit(command, text)
+                    else:
+                        command.setdefault("parameters", {})["confirmed"] = True
+                        succ, m = self.executor.execute(command)
+                        if succ:
+                            self._play_sound("success")
+                            if self.window.settings.get("tts_enabled", False):
+                                self.tts.speak(m)
+                elif success:
+                    self._play_sound("success")
+                    if self.window.settings.get("tts_enabled", False):
+                        self.tts.speak(msg)
                 else:
                     self._play_sound("error")
-                    self.pill_error_signal.emit(msg)
-                return
-
-            if msg == "CONFIRM_REQUIRED":
-                if self.window.settings.get("confirm_dangerous_actions", True):
-                    self.confirm_action_signal.emit(command, text)
-                else:
-                    command.setdefault("parameters", {})["confirmed"] = True
-                    succ, m = self.executor.execute(command)
-                    if succ:
-                        self._play_sound("success")
-                        if self.window.settings.get("tts_enabled", False):
-                            self.tts.speak(m)
-            elif success:
-                self._play_sound("success")
-                if self.window.settings.get("tts_enabled", False):
-                    self.tts.speak(msg)
-            else:
+            except Exception as e:
+                self.log(f"Ошибка выполнения Spotlight-команды: {e}")
                 self._play_sound("error")
+                self.pill_error_signal.emit("Ошибка выполнения")
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -7956,8 +8632,10 @@ class CommandExecutor:
                 # Очищаем буфер перед эмуляцией Ctrl+C, чтобы исключить случайную отправку старых секретов
                 try:
                     win32clipboard.OpenClipboard()
-                    win32clipboard.EmptyClipboard()
-                    win32clipboard.CloseClipboard()
+                    try:
+                        win32clipboard.EmptyClipboard()
+                    finally:
+                        win32clipboard.CloseClipboard()
                 except Exception:
                     pass
 
@@ -7969,11 +8647,16 @@ class CommandExecutor:
                 ctypes.windll.user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
                 time.sleep(0.1)
 
-                win32clipboard.OpenClipboard()
                 clip_text = ""
-                if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
-                    clip_text = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
-                win32clipboard.CloseClipboard()
+                try:
+                    win32clipboard.OpenClipboard()
+                    try:
+                        if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
+                            clip_text = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+                    finally:
+                        win32clipboard.CloseClipboard()
+                except Exception:
+                    clip_text = ""
 
                 if clip_text and clip_text.strip():
                     prompt = f"{prompt}\n\n{clip_text.strip()}"
@@ -8093,651 +8776,6 @@ class CommandExecutor:
             self.log(f"Предупреждение: не удалось извлечь прямой ролик YouTube ({e}), используем поиск.")
 
         return search_url
-</file>
-
-<file path="tests/test_components.py">
-"""
-Комплексный автоматизированный тест компонентов Antigravity Voice.
-Проверяет все модули системы: DecisionEngine, AudioDucker, TextToSpeech,
-конфигурационные файлы, горячие клавиши и схемы команд.
-"""
-import os
-import json
-import unittest
-
-from core.decision_engine import DecisionEngine
-from core.audio_ducking import AudioDucker
-from core.text_to_speech import TextToSpeech
-from core.keyboard_hook import CopilotKeyHook
-
-class TestDecisionEngine(unittest.TestCase):
-    def setUp(self):
-        self.engine = DecisionEngine()
-
-    def test_antigravity_gui_open(self):
-        res = self.engine.parse_command("Открой Antigravity")
-        self.assertEqual(res["action"], "antigravity_gui")
-        self.assertEqual(res["target"], "open")
-
-    def test_antigravity_gui_prompt(self):
-        res = self.engine.parse_command("Джарвис, напиши в Antigravity создай новый проект на FastAPI")
-        self.assertEqual(res["action"], "antigravity_gui")
-        self.assertEqual(res["target"], "prompt")
-        self.assertIn("FastAPI", res["parameters"]["prompt"])
-
-    def test_antigravity_gui_new_chat(self):
-        res = self.engine.parse_command("Создай новый чат в Antigravity")
-        self.assertEqual(res["action"], "antigravity_gui")
-        self.assertEqual(res["target"], "new_chat")
-
-    def test_antigravity_cli_with_task(self):
-        res = self.engine.parse_command("Запусти Antigravity CLI git status")
-        self.assertEqual(res["action"], "antigravity_cli")
-        self.assertIn("git status", res["parameters"]["prompt"])
-
-    def test_model_status(self):
-        status = self.engine.get_model_status()
-        self.assertIn("Jedi-3B", status)
-        self.assertIsInstance(self.engine.is_llm_available(), bool)
-
-    def test_antigravity_cli_plain(self):
-        res = self.engine.parse_command("Открой терминал Antigravity")
-        self.assertEqual(res["action"], "antigravity_cli")
-
-    def test_volume_absolute(self):
-        res = self.engine.parse_command("Сделай громкость 45%")
-        self.assertEqual(res["action"], "set_volume")
-        self.assertEqual(res["target"], "absolute")
-        self.assertEqual(res["parameters"]["percent"], 45)
-
-    def test_volume_step_down(self):
-        res = self.engine.parse_command("Сделай потише")
-        self.assertEqual(res["action"], "set_volume")
-        self.assertEqual(res["target"], "step_down")
-
-    def test_volume_step_up(self):
-        res = self.engine.parse_command("Сделай громче")
-        self.assertEqual(res["action"], "set_volume")
-        self.assertEqual(res["target"], "step_up")
-
-    def test_volume_mute(self):
-        res = self.engine.parse_command("Выключи звук")
-        self.assertEqual(res["action"], "set_volume")
-        self.assertEqual(res["target"], "mute")
-
-    def test_media_control(self):
-        res = self.engine.parse_command("Следующий трек")
-        self.assertEqual(res["action"], "media_control")
-        self.assertEqual(res["target"], "next_track")
-
-    def test_web_search(self):
-        res = self.engine.parse_command("Найди в гугле погода Москва")
-        self.assertEqual(res["action"], "open_url")
-        self.assertIn("google.com/search?q=", res["target"])
-        import urllib.parse
-        self.assertIn("погода", urllib.parse.unquote(res["target"]))
-
-    def test_youtube_search_complex(self):
-        res = self.engine.parse_command("Открой, пожалуйста, ютубчик и включи там видео мармука.")
-        self.assertEqual(res["action"], "vision_agent")
-        self.assertIn("мармука", res["parameters"]["prompt"])
-
-    def test_vk_open_with_punctuation(self):
-        res = self.engine.parse_command("Открой ВК, пожалуйста.")
-        self.assertEqual(res["action"], "open_url")
-        self.assertEqual(res["target"], "https://vk.com")
-
-    def test_domain_in_browser(self):
-        res = self.engine.parse_command("Открой vk.com в браузере.")
-        self.assertEqual(res["action"], "open_url")
-        self.assertEqual(res["target"], "https://vk.com")
-
-    def test_dangerous_action_confirmation(self):
-        res = self.engine.parse_command("Выключи ноутбук")
-        self.assertEqual(res["action"], "system_action")
-        self.assertEqual(res["target"], "shutdown")
-        self.assertTrue(res["parameters"].get("dangerous"))
-
-    def test_youtube_direct_play_latest(self):
-        # Сложная мультимодальная инструкция направляется в VisionAgent
-        res = self.engine.parse_command("На ютуб включить последнее видео мармука")
-        self.assertEqual(res["action"], "vision_agent")
-        self.assertIn("мармук", res["parameters"]["prompt"])
-
-    def test_youtube_direct_play_without_keyword_youtube(self):
-        # Сложная мультимодальная инструкция направляется в VisionAgent
-        res = self.engine.parse_command("Включи последнее видео мармука")
-        self.assertEqual(res["action"], "vision_agent")
-        self.assertIn("мармук", res["parameters"]["prompt"])
-
-    def test_subpage_vk_messages(self):
-        # Проверка открытия страницы сообщений ВК
-        res = self.engine.parse_command("Открой сообщения вк")
-        self.assertEqual(res["action"], "open_url")
-        self.assertEqual(res["target"], "https://vk.com/im")
-
-    def test_subpage_vk_messages_with_preposition(self):
-        # Проверка открытия сообщений ВК с предлогом («в вк»)
-        res = self.engine.parse_command("Перейди в сообщения в вк")
-        self.assertEqual(res["action"], "open_url")
-        self.assertEqual(res["target"], "https://vk.com/im")
-
-    def test_subpage_youtube_subscriptions(self):
-        # Проверка открытия подписок на YouTube
-        res = self.engine.parse_command("Открой подписки на ютубе")
-        self.assertEqual(res["action"], "open_url")
-        self.assertEqual(res["target"], "https://www.youtube.com/feed/subscriptions")
-
-    def test_subpage_github_trending(self):
-        # Проверка открытия трендов GitHub
-        res = self.engine.parse_command("Покажи тренды гитхаб")
-        self.assertEqual(res["action"], "open_url")
-        self.assertEqual(res["target"], "https://github.com/trending")
-
-    def test_subpage_mail_inbox(self):
-        # Проверка открытия входящих в почте
-        res = self.engine.parse_command("Открой входящие в почте")
-        self.assertEqual(res["action"], "open_url")
-        self.assertEqual(res["target"], "https://mail.google.com/mail/u/0/#inbox")
-
-    def test_universal_site_search_kinopoisk(self):
-        # Проверка автономного управления через Vision-агента
-        res = self.engine.parse_command("На Кинопоиске найди фильм Начало")
-        self.assertEqual(res["action"], "vision_agent")
-        self.assertIn("Начало", res["parameters"]["prompt"])
-
-    def test_universal_site_search_avito(self):
-        # Проверка автономного управления через Vision-агента
-        res = self.engine.parse_command("Найди на Авито велосипед")
-        self.assertEqual(res["action"], "vision_agent")
-        self.assertIn("велосипед", res["parameters"]["prompt"])
-
-    def test_universal_site_search_wikipedia(self):
-        # Проверка автономного управления через Vision-агента
-        res = self.engine.parse_command("В Википедии найди квантовую физику")
-        self.assertEqual(res["action"], "vision_agent")
-        self.assertIn("квантовую физику", res["parameters"]["prompt"])
-
-    def test_universal_site_search_ozon(self):
-        # Проверка автономного управления через Vision-агента
-        res = self.engine.parse_command("На Озоне найди кофеварку")
-        self.assertEqual(res["action"], "vision_agent")
-        self.assertIn("кофеварку", res["parameters"]["prompt"])
-
-    def test_universal_site_search_wildberries(self):
-        # Проверка автономного управления через Vision-агента
-        res = self.engine.parse_command("На wildberries найди кроссовки")
-        self.assertEqual(res["action"], "vision_agent")
-        self.assertIn("кроссовки", res["parameters"]["prompt"])
-
-    def test_window_control_close(self):
-        # Проверка закрытия приложений
-        res = self.engine.parse_command("Закрой блокнот")
-        self.assertEqual(res["action"], "window_control")
-        self.assertEqual(res["target"], "close")
-        self.assertEqual(res["parameters"]["app_name"], "блокнот")
-
-    def test_window_control_minimize_and_restore(self):
-        # Проверка сворачивания и рабочего стола
-        res_min = self.engine.parse_command("Сверни блокнот")
-        self.assertEqual(res_min["action"], "window_control")
-        self.assertEqual(res_min["target"], "minimize")
-
-        res_desktop = self.engine.parse_command("Покажи рабочий стол")
-        self.assertEqual(res_desktop["action"], "window_control")
-        self.assertEqual(res_desktop["target"], "minimize_all")
-
-        res_max = self.engine.parse_command("Разверни на весь экран")
-        self.assertEqual(res_max["action"], "window_control")
-        self.assertEqual(res_max["target"], "maximize")
-
-    def test_in_app_typing(self):
-        # Проверка ввода текста в приложение
-        res = self.engine.parse_command("В блокноте напиши купить молоко и хлеб")
-        self.assertEqual(res["action"], "app_type")
-        self.assertEqual(res["target"], "type")
-        self.assertEqual(res["parameters"]["app_name"], "блокнот")
-        self.assertEqual(res["parameters"]["text"], "купить молоко и хлеб")
-
-    def test_in_app_search_telegram(self):
-        # Поиск внутри приложения направляется в Vision-агента
-        res = self.engine.parse_command("В телеграме найди проект")
-        self.assertEqual(res["action"], "vision_agent")
-        self.assertIn("проект", res["parameters"]["prompt"])
-
-    def test_app_tabs_hotkeys(self):
-        # Проверка горячих клавиш вкладок
-        res_tab = self.engine.parse_command("Новая вкладка")
-        self.assertEqual(res_tab["action"], "app_hotkey")
-        self.assertEqual(res_tab["target"], "new_tab")
-
-        res_close = self.engine.parse_command("Закрой вкладку")
-        self.assertEqual(res_close["action"], "app_hotkey")
-        self.assertEqual(res_close["target"], "close_tab")
-
-
-
-
-from core.executor import CommandExecutor
-from core.keyboard_hook import CopilotKeyHook, VK_F23, VK_F23_ALT
-
-class TestCoreModules(unittest.TestCase):
-    def test_executor_vision_agent(self):
-        from unittest.mock import MagicMock
-        mock_vm = MagicMock()
-        mock_vm.is_running.return_value = True
-        mock_vm.is_loading.return_value = False
-        mock_vm.execute_task.return_value = True
-
-        executor = CommandExecutor(vision_manager=mock_vm)
-        cmd = {"action": "vision_agent", "parameters": {"prompt": "На ютубе найди Мармука"}}
-        ok, msg = executor.execute(cmd)
-        self.assertTrue(ok)
-        self.assertEqual(msg, "Анализирую экран...")
-        mock_vm.execute_task.assert_called_once_with("На ютубе найди Мармука", max_steps=8)
-
-    def test_audio_ducker_init(self):
-        ducker = AudioDucker()
-        self.assertFalse(ducker._is_ducked)
-
-    def test_audio_ducker_duck_and_unduck(self):
-        ducker = AudioDucker()
-        import unittest.mock as mock
-        mock_endpoint = mock.MagicMock()
-        mock_endpoint.GetMasterVolumeLevelScalar.return_value = 0.8
-
-        with mock.patch.object(ducker, "_get_volume_endpoint", return_value=mock_endpoint):
-            ducker.duck(duck_factor=0.25)
-            self.assertTrue(ducker._is_ducked)
-            self.assertAlmostEqual(ducker._previous_volume, 0.8)
-            mock_endpoint.SetMasterVolumeLevelScalar.assert_called_with(0.2, None)
-
-            ducker.unduck()
-            self.assertFalse(ducker._is_ducked)
-            self.assertIsNone(ducker._previous_volume)
-            mock_endpoint.SetMasterVolumeLevelScalar.assert_called_with(0.8, None)
-
-    def test_audio_ducker_duck_when_muted_remains_zero(self):
-        """Если системная громкость равна 0 (Mute), ducking оставляет 0.0 и не включает звук."""
-        ducker = AudioDucker()
-        import unittest.mock as mock
-        mock_endpoint = mock.MagicMock()
-        mock_endpoint.GetMasterVolumeLevelScalar.return_value = 0.0
-
-        with mock.patch.object(ducker, "_get_volume_endpoint", return_value=mock_endpoint):
-            ducker.duck(duck_factor=0.25)
-            self.assertTrue(ducker._is_ducked)
-            self.assertEqual(ducker._previous_volume, 0.0)
-            mock_endpoint.SetMasterVolumeLevelScalar.assert_called_with(0.0, None)
-
-    def test_tts_init(self):
-        tts = TextToSpeech(speed=1)
-        self.assertEqual(tts.speed, 1)
-
-    def test_keyboard_hook_init(self):
-        hook = CopilotKeyHook()
-        self.assertFalse(hook._is_running)
-        self.assertEqual(VK_F23, 0x86)
-        self.assertEqual(VK_F23_ALT, 0x8E)
-
-    def test_keyboard_hook_windows_key_not_blocked(self):
-        hook = CopilotKeyHook()
-        class FakeData:
-            vkCode = 0x5B  # VK_LWIN
-        # WM_KEYDOWN for Windows key must ALWAYS return True (never blocked)
-        res = hook._win32_event_filter(0x0100, FakeData())
-        self.assertTrue(res)
-        # WM_KEYUP for Windows key must also return True
-        res_up = hook._win32_event_filter(0x0101, FakeData())
-        self.assertTrue(res_up)
-
-    def test_keyboard_hook_copilot_blocked(self):
-        clicked = []
-        hook = CopilotKeyHook(on_click=lambda: clicked.append(True))
-        class FakeDataF23:
-            vkCode = 0x86  # VK_F23
-        # WM_KEYDOWN for Copilot key must return False (intercepted and blocked)
-        res_down = hook._win32_event_filter(0x0100, FakeDataF23())
-        self.assertFalse(res_down)
-        # WM_KEYUP for Copilot key must return False
-        res_up = hook._win32_event_filter(0x0101, FakeDataF23())
-        self.assertFalse(res_up)
-
-    def test_executor_general_answer(self):
-        executor = CommandExecutor()
-        cmd = {"action": "general_answer", "target": "answer", "parameters": {"text": "Тестовый ответ"}}
-        ok, msg = executor.execute(cmd)
-        self.assertTrue(ok)
-        self.assertEqual(msg, "Тестовый ответ")
-
-    def test_executor_dangerous_action_confirmation(self):
-        executor = CommandExecutor()
-        cmd = {"action": "system_action", "target": "shutdown", "parameters": {"dangerous": True}}
-        ok, msg = executor.execute(cmd)
-        self.assertFalse(ok)
-        self.assertEqual(msg, "CONFIRM_REQUIRED")
-
-    def test_executor_antigravity_config(self):
-        executor = CommandExecutor()
-        self.assertIn("Antigravity", executor.gui_window_names)
-        self.assertEqual(executor.cli_executable, "agy")
-
-    def test_executor_launch_app_url_redirection(self):
-        executor = CommandExecutor()
-        cmd = {"action": "launch_app", "target": "vk.com", "parameters": {}}
-        import unittest.mock as mock
-        with mock.patch("webbrowser.open") as mock_open:
-            ok, msg = executor.execute(cmd)
-            self.assertTrue(ok)
-            mock_open.assert_called_once_with("https://vk.com")
-
-    def test_executor_open_url_direct_play(self):
-        executor = CommandExecutor()
-        cmd = {
-            "action": "open_url",
-            "target": "https://www.youtube.com/results?search_query=мармук",
-            "parameters": {"query": "мармук", "direct_play": True, "sort_by_date": True}
-        }
-        import unittest.mock as mock
-        with mock.patch.object(executor, "_resolve_youtube_video", return_value="https://www.youtube.com/watch?v=EjavzU6L2YM") as mock_res:
-            with mock.patch("webbrowser.open") as mock_open:
-                ok, msg = executor.execute(cmd)
-                self.assertTrue(ok)
-                mock_res.assert_called_once_with("мармук", sort_by_date=True)
-                mock_open.assert_called_once_with("https://www.youtube.com/watch?v=EjavzU6L2YM")
-                self.assertIn("YouTube", msg)
-
-    def test_executor_resolve_youtube_video_mocked(self):
-        executor = CommandExecutor()
-        import io
-        import unittest.mock as mock
-        class MockResp(io.BytesIO):
-            def __enter__(self):
-                return self
-            def __exit__(self, *args):
-                pass
-
-        mock_response = MockResp(b'some html "videoId":"TestVideo11" and more html')
-        with mock.patch("urllib.request.urlopen", return_value=mock_response):
-            video_url = executor._resolve_youtube_video("тест")
-            self.assertEqual(video_url, "https://www.youtube.com/watch?v=TestVideo11")
-
-
-    def test_executor_resolve_youtube_video_fallback_on_error(self):
-        executor = CommandExecutor()
-        import unittest.mock as mock
-        with mock.patch("urllib.request.urlopen", side_effect=Exception("Network error")):
-            fallback_url = executor._resolve_youtube_video("тест", sort_by_date=True)
-            self.assertIn("youtube.com/results?search_query=", fallback_url)
-            self.assertIn("sp=CAI", fallback_url)
-
-    def test_desktop_app_controller_launch_or_focus_existing(self):
-        from core.app_controller import DesktopAppController
-        ctrl = DesktopAppController()
-        import unittest.mock as mock
-        with mock.patch.object(ctrl, "find_window", return_value=12345):
-            with mock.patch.object(ctrl, "focus_window", return_value=True):
-                ok, msg = ctrl.launch_or_focus("блокнот")
-                self.assertTrue(ok)
-                self.assertIn("Переключено на", msg)
-
-    def test_desktop_app_controller_launch_new(self):
-        from core.app_controller import DesktopAppController
-        ctrl = DesktopAppController()
-        import unittest.mock as mock
-        with mock.patch.object(ctrl, "find_window", side_effect=[None, 12345]):
-            with mock.patch.object(ctrl, "focus_window", return_value=True):
-                with mock.patch("os.startfile") as mock_start:
-                    ok, msg = ctrl.launch_or_focus("блокнот", "notepad.exe")
-                    self.assertTrue(ok)
-                    self.assertIn("Запущено", msg)
-                    mock_start.assert_called_once_with("notepad.exe")
-
-    def test_executor_window_control_execution(self):
-        executor = CommandExecutor()
-        cmd = {"action": "window_control", "target": "close", "parameters": {"app_name": "блокнот"}}
-        import unittest.mock as mock
-        with mock.patch.object(executor.app_controller, "close_app", return_value=(True, "Закрыто: блокнот")) as mock_close:
-            ok, msg = executor.execute(cmd)
-            self.assertTrue(ok)
-            mock_close.assert_called_once_with("блокнот")
-
-    def test_executor_app_type_execution(self):
-        executor = CommandExecutor()
-        cmd = {
-            "action": "app_type",
-            "target": "type",
-            "parameters": {"app_name": "блокнот", "text": "купить молоко", "submit": False, "search_mode": False}
-        }
-        import unittest.mock as mock
-        with mock.patch.object(executor.app_controller, "type_into_app", return_value=(True, "Введено в блокнот")) as mock_type:
-            ok, msg = executor.execute(cmd)
-            self.assertTrue(ok)
-            mock_type.assert_called_once_with("блокнот", "купить молоко", submit=False, search_mode=False)
-
-    def test_executor_app_hotkey_execution(self):
-        executor = CommandExecutor()
-        cmd = {"action": "app_hotkey", "target": "new_tab", "parameters": {"app_name": "браузер"}}
-        import unittest.mock as mock
-        with mock.patch.object(executor.app_controller, "send_app_hotkey", return_value=(True, "Новая вкладка")) as mock_hk:
-            ok, msg = executor.execute(cmd)
-            self.assertTrue(ok)
-            mock_hk.assert_called_once_with("браузер", "new_tab")
-
-class TestConfigs(unittest.TestCase):
-
-
-    def test_settings_integrity(self):
-        config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "settings.json")
-        self.assertTrue(os.path.exists(config_path))
-        with open(config_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        self.assertIn("default_activation_mode", data)
-        self.assertIn("close_behavior", data)
-        self.assertIn("audio_ducking_enabled", data)
-        self.assertIn("wake_word_enabled", data)
-
-    def test_commands_integrity(self):
-        commands_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "commands.json")
-        self.assertTrue(os.path.exists(commands_path))
-        with open(commands_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        self.assertIn("apps", data)
-        self.assertIn("urls", data)
-        self.assertIn("antigravity", data)
-
-    def test_commands_dynamic_loading(self):
-        engine = DecisionEngine()
-        self.assertIn("почта", engine.url_map)
-        res = engine.parse_command("Открой почту")
-        self.assertEqual(res["action"], "open_url")
-        self.assertEqual(res["target"], "https://mail.google.com")
-
-    def test_settings_wake_word(self):
-        config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "settings.json")
-        with open(config_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        self.assertIn("wake_word", data)
-        self.assertEqual(data["wake_word"].lower(), "джарвис")
-
-    def test_decision_engine_load_model_failure(self):
-        fake_engine = DecisionEngine()
-        import unittest.mock as mock
-        with mock.patch.object(fake_engine, "is_llm_available", return_value=False):
-            self.assertFalse(fake_engine.load_model())
-
-class TestMainWindowFeatures(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        import sys
-        from PyQt6.QtWidgets import QApplication
-        cls.app = QApplication.instance() or QApplication(sys.argv)
-
-    def test_main_window_check_all_and_wake_word(self):
-        from gui.main_window import MainWindow
-        config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "settings.json")
-        window = MainWindow(config_path)
-
-        # 1. Проверка наличия кнопки полной проверки всех систем
-        self.assertTrue(hasattr(window, "btn_check_all_systems"))
-        self.assertIn("Проверить все системы", window.btn_check_all_systems.text())
-
-        # 2. Проверка поля настройки слова-триггера
-        self.assertTrue(hasattr(window, "txt_wake_word"))
-        self.assertEqual(window.txt_wake_word.text().lower(), "джарвис")
-
-        # 3. Проверка изменения слова-триггера и сброса по умолчанию
-        window.txt_wake_word.setText("Компьютер")
-        self.assertEqual(window.settings.get("wake_word"), "компьютер")
-
-        window._reset_wake_word()
-        self.assertEqual(window.settings.get("wake_word"), "джарвис")
-        self.assertEqual(window.txt_wake_word.text(), "Джарвис")
-
-        # 4. Проверка обновления статусной карточки
-        window.update_status_card("mic", "Тестовый статус", "#34D399")
-        self.assertEqual(window.card_mic.status_label.text(), "Тестовый статус")
-
-class TestTrayManager(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        import sys
-        from PyQt6.QtWidgets import QApplication
-        cls.app = QApplication.instance() or QApplication(sys.argv)
-
-    def setUp(self):
-        from gui.tray_manager import TrayManager
-        self.tray = TrayManager()
-
-    def tearDown(self):
-        self.tray.stop()
-
-    def test_state_idle(self):
-        self.tray.set_state("idle")
-        self.assertEqual(self.tray._current_state, "idle")
-        self.assertEqual(self.tray.tray_icon.toolTip(), "Antigravity Voice: Готов к работе")
-        self.assertEqual(self.tray.status_action.text(), "Статус: Активен (Готов)")
-        self.assertEqual(self.tray.action_toggle.text(), "Остановить ассистента (освободить VRAM)")
-        self.assertFalse(self.tray._anim_timer.isActive())
-
-    def test_state_listening(self):
-        self.tray.set_state("listening")
-        self.assertEqual(self.tray._current_state, "listening")
-        self.assertEqual(self.tray.tray_icon.toolTip(), "Antigravity Voice: Запись речи...")
-        self.assertEqual(self.tray.status_action.text(), "Статус: Запись речи...")
-        self.assertEqual(self.tray.action_toggle.text(), "Остановить ассистента (освободить VRAM)")
-        self.assertTrue(self.tray._anim_timer.isActive())
-
-    def test_state_working(self):
-        self.tray.set_state("working")
-        self.assertEqual(self.tray._current_state, "working")
-        self.assertEqual(self.tray.tray_icon.toolTip(), "Antigravity Voice: Vision-агент анализирует экран...")
-        self.assertEqual(self.tray.status_action.text(), "Статус: Анализ экрана...")
-        self.assertEqual(self.tray.action_toggle.text(), "Остановить ассистента (освободить VRAM)")
-        self.assertTrue(self.tray._anim_timer.isActive())
-
-    def test_state_stopped(self):
-        self.tray.set_state("stopped")
-        self.assertEqual(self.tray._current_state, "stopped")
-        self.assertEqual(self.tray.tray_icon.toolTip(), "Antigravity Voice: Остановлен (0 МБ VRAM)")
-        self.assertEqual(self.tray.status_action.text(), "Статус: Остановлен (0 МБ VRAM)")
-        self.assertEqual(self.tray.action_toggle.text(), "Запустить ассистента")
-        self.assertFalse(self.tray._anim_timer.isActive())
-
-    def test_update_status(self):
-        self.tray.update_status(False)
-        self.assertEqual(self.tray._current_state, "stopped")
-        self.assertFalse(self.tray._anim_timer.isActive())
-
-        self.tray.update_status(True)
-        self.assertEqual(self.tray._current_state, "idle")
-        self.assertFalse(self.tray._anim_timer.isActive())
-
-
-class TestRegressionsAndProblemFixes(unittest.TestCase):
-    """Регрессионные тесты дефектов и системных интеграций."""
-
-    def setUp(self):
-        from core.executor import CommandExecutor
-        self.engine = DecisionEngine()
-        self.executor = CommandExecutor()
-
-    def test_volume_unmute(self):
-        """Команда unmute корректно обрабатывается в _handle_volume."""
-        from unittest.mock import patch
-        with patch.object(self.executor, "_send_key") as mock_send_key:
-            success, msg = self.executor._handle_volume("unmute", {})
-            self.assertTrue(success)
-            self.assertEqual(msg, "Звук включен")
-            mock_send_key.assert_called_once()
-
-    def test_lock_workstation(self):
-        """Команда lock_workstation блокирует компьютер через ctypes."""
-        from unittest.mock import patch
-        with patch("ctypes.windll.user32.LockWorkStation", return_value=1) as mock_lock:
-            cmd = {
-                "action": "system_action",
-                "target": "lock_workstation",
-                "parameters": {}
-            }
-            success, msg = self.executor.execute(cmd)
-            self.assertTrue(success)
-            self.assertEqual(msg, "Компьютер заблокирован")
-            mock_lock.assert_called_once()
-
-    def test_github_repositories_url(self):
-        """URL репозиториев github валиден."""
-        cmd = self.engine.parse_command("Открой репозитории гитхаб")
-        self.assertEqual(cmd["action"], "open_url")
-        self.assertEqual(cmd["target"], "https://github.com/settings/repositories")
-
-    def test_vision_auto_focus_browser_setting(self):
-        """Настройка vision_auto_focus_browser=False отключает автофокус браузера."""
-        from unittest.mock import MagicMock, patch
-        from core.executor import CommandExecutor
-        executor_no_autofocus = CommandExecutor(
-            vision_manager=MagicMock(),
-            settings={"vision_auto_focus_browser": False}
-        )
-        with patch.object(executor_no_autofocus.app_controller, "launch_or_focus") as mock_focus:
-            cmd = {
-                "action": "vision_agent",
-                "target": "computer_use",
-                "parameters": {"prompt": "На ютубе включи музыку"}
-            }
-            executor_no_autofocus._handle_vision_agent(cmd)
-            mock_focus.assert_not_called()
-
-        executor_with_autofocus = CommandExecutor(
-            vision_manager=MagicMock(),
-            settings={"vision_auto_focus_browser": True}
-        )
-        with patch.object(executor_with_autofocus.app_controller, "launch_or_focus") as mock_focus:
-            cmd = {
-                "action": "vision_agent",
-                "target": "computer_use",
-                "parameters": {"prompt": "На ютубе включи музыку"}
-            }
-            executor_with_autofocus._handle_vision_agent(cmd)
-            mock_focus.assert_called_once()
-
-    def test_multi_word_urls_from_commands_json(self):
-        """Составные URL из commands.json корректно обрабатываются Fast-Path."""
-        vk_music = self.engine.parse_command("Открой музыка вк")
-        self.assertEqual(vk_music["action"], "open_url")
-        self.assertEqual(vk_music["target"], "https://vk.com/audios")
-
-        vk_news = self.engine.parse_command("Перейди на новости вк")
-        self.assertEqual(vk_news["action"], "open_url")
-        self.assertEqual(vk_news["target"], "https://vk.com/feed")
-
-        yt_history = self.engine.parse_command("Открой история ютуб")
-        self.assertEqual(yt_history["action"], "open_url")
-        self.assertEqual(yt_history["target"], "https://www.youtube.com/feed/history")
-
-
-if __name__ == "__main__":
-    unittest.main()
 </file>
 
 </files>
