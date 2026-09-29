@@ -163,18 +163,21 @@ def test_gui_components():
     app = QApplication.instance() or QApplication(sys.argv)
 
     from gui.main_window import MainWindow
-    from gui.floating_pill import FloatingPill
+    from gui.floating_pill import FloatingPill, AudioWaveVisualizer
     from gui.spotlight_bar import SpotlightBar
     from gui.tray_manager import TrayManager
+    from gui.screen_glow import ScreenGlowOverlay
 
     config_path = os.path.join(PROJECT_DIR, "config", "settings.json")
     window = MainWindow(config_path)
     pill = FloatingPill()
     spotlight = SpotlightBar()
     tray = TrayManager()
+    screen_glow = ScreenGlowOverlay()
 
     print(f"  [OK] MainWindow создано с заголовком: '{window.windowTitle()}'")
-    print(f"  [OK] FloatingPill создан (флаги: StayOnTop, Frameless, Translucent)")
+    print(f"  [OK] FloatingPill создан с AudioWaveVisualizer (флаги: StayOnTop, Frameless, Translucent)")
+    print(f"  [OK] ScreenGlowOverlay создан (контурная неоновая подсветка экрана, WS_EX_TRANSPARENT)")
     print(f"  [OK] SpotlightBar создан (с подсказками и историей команд)")
     print(f"  [OK] TrayManager инициализирован.")
     

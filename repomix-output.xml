@@ -64,6 +64,7 @@ gui/
   close_dialog.py
   floating_pill.py
   main_window.py
+  screen_glow.py
   spotlight_bar.py
   styles.py
   tray_manager.py
@@ -89,6 +90,203 @@ README.md
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="gui/screen_glow.py">
+"""
+Контурная неоновая подсветка экрана (Screen Contour Glow Overlay).
+Отображает стильную анимированную рамку по периметру экрана в стиле HUD Jarvis
+во время работы автономного Vision-агента или выполнения сложных задач.
+Полностью прозрачна для кликов мыши (WS_EX_TRANSPARENT).
+"""
+import math
+from typing import Optional
+from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF
+from PyQt6.QtWidgets import QWidget
+from PyQt6.QtGui import (
+    QColor, QPainter, QPen, QBrush, QLinearGradient,
+    QFont, QGuiApplication, QCursor
+)
+
+try:
+    import win32gui
+    import win32con
+    HAS_WIN32 = True
+except ImportError:
+    HAS_WIN32 = False
+
+
+class ScreenGlowOverlay(QWidget):
+    """
+    Полноэкранный полупрозрачный оверлей с пульсирующим неоновым контуром.
+    Не перехватывает клики мыши и не забирает системный фокус.
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+
+        # Безрамочное окно поверх всех окон, скрытое из панели задач
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint |
+            Qt.WindowType.Tool |
+            Qt.WindowType.WindowTransparentForInput
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+
+        self._phase = 0.0
+        self._glow_color = QColor(0, 240, 255)  # Неоновый циан Jarvis
+        self._secondary_color = QColor(139, 92, 246)  # Фиолетовый акцент
+        self._status_text = "JARVIS • VISION AGENT ACTIVE"
+
+        # Таймер плавной анимации дыхания (30 FPS)
+        self._anim_timer = QTimer(self)
+        self._anim_timer.setInterval(33)
+        self._anim_timer.timeout.connect(self._on_anim_frame)
+
+        self._setup_win32_passthrough()
+
+    def _setup_win32_passthrough(self) -> None:
+        """Настраивает расширенные стили Win32 для гарантированного сквозного клика."""
+        if not HAS_WIN32:
+            return
+        try:
+            hwnd = int(self.winId())
+            ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+            win32gui.SetWindowLong(
+                hwnd,
+                win32con.GWL_EXSTYLE,
+                ex_style | win32con.WS_EX_TRANSPARENT |
+                win32con.WS_EX_LAYERED |
+                win32con.WS_EX_NOACTIVATE |
+                win32con.WS_EX_TOOLWINDOW
+            )
+        except Exception:
+            pass
+
+    def _reposition_to_active_screen(self) -> None:
+        """Растягивает оверлей на весь активный монитор."""
+        screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+        if screen:
+            geom = screen.geometry()
+            self.setGeometry(geom)
+
+    def _on_anim_frame(self) -> None:
+        """Шаг фазы анимации дыхания."""
+        self._phase += 0.07
+        if self._phase > 2 * math.pi:
+            self._phase -= 2 * math.pi
+        self.update()
+
+    def start_glow(self, text: str = "JARVIS • VISION AGENT ACTIVE", color: Optional[QColor] = None) -> None:
+        """Запускает отображение и анимацию неонового контура."""
+        if color:
+            self._glow_color = color
+        self._status_text = text
+        self._reposition_to_active_screen()
+        self._setup_win32_passthrough()
+        self.show()
+        self.raise_()
+        if not self._anim_timer.isActive():
+            self._anim_timer.start()
+
+    def stop_glow(self) -> None:
+        """Останавливает анимацию и скрывает оверлей."""
+        self._anim_timer.stop()
+        self.hide()
+
+    def paintEvent(self, event) -> None:
+        """Отрисовка пульсирующего неонового контура, угловых скобок HUD и статус-бейджа."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        w = float(self.width())
+        h = float(self.height())
+
+        # Коэффициент пульсации дыхания (от 0.6 до 1.0)
+        pulse = 0.80 + 0.20 * math.sin(self._phase)
+        base_alpha = int(220 * pulse)
+        halo_alpha = int(70 * pulse)
+
+        glow_rgb = (self._glow_color.red(), self._glow_color.green(), self._glow_color.blue())
+        halo_depth = 28.0
+
+        # 1. Внутренний мягкий ореол (Glow Halo) по 4 сторонам
+        # Верхний ореол
+        top_grad = QLinearGradient(0, 0, 0, halo_depth)
+        top_grad.setColorAt(0.0, QColor(*glow_rgb, halo_alpha))
+        top_grad.setColorAt(1.0, QColor(*glow_rgb, 0))
+        painter.fillRect(QRectF(0, 0, w, halo_depth), top_grad)
+
+        # Нижний ореол
+        bottom_grad = QLinearGradient(0, h, 0, h - halo_depth)
+        bottom_grad.setColorAt(0.0, QColor(*glow_rgb, halo_alpha))
+        bottom_grad.setColorAt(1.0, QColor(*glow_rgb, 0))
+        painter.fillRect(QRectF(0, h - halo_depth, w, halo_depth), bottom_grad)
+
+        # Левый ореол
+        left_grad = QLinearGradient(0, 0, halo_depth, 0)
+        left_grad.setColorAt(0.0, QColor(*glow_rgb, halo_alpha))
+        left_grad.setColorAt(1.0, QColor(*glow_rgb, 0))
+        painter.fillRect(QRectF(0, 0, halo_depth, h), left_grad)
+
+        # Правый ореол
+        right_grad = QLinearGradient(w, 0, w - halo_depth, 0)
+        right_grad.setColorAt(0.0, QColor(*glow_rgb, halo_alpha))
+        right_grad.setColorAt(1.0, QColor(*glow_rgb, 0))
+        painter.fillRect(QRectF(w - halo_depth, 0, halo_depth, h), right_grad)
+
+        # 2. Четкая внешняя граница периметра
+        border_pen = QPen(QColor(*glow_rgb, base_alpha))
+        border_pen.setWidthF(3.5)
+        painter.setPen(border_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(QRectF(1.75, 1.75, w - 3.5, h - 3.5))
+
+        # 3. Футуристичные угловые скобки HUD (Cyber Brackets)
+        bracket_len = 36.0
+        bracket_pen = QPen(QColor(255, 255, 255, int(240 * pulse)))
+        bracket_pen.setWidthF(4.0)
+        painter.setPen(bracket_pen)
+
+        # Верхний левый угол
+        painter.drawLine(QPointF(4, 4), QPointF(4 + bracket_len, 4))
+        painter.drawLine(QPointF(4, 4), QPointF(4, 4 + bracket_len))
+
+        # Верхний правый угол
+        painter.drawLine(QPointF(w - 4, 4), QPointF(w - 4 - bracket_len, 4))
+        painter.drawLine(QPointF(w - 4, 4), QPointF(w - 4, 4 + bracket_len))
+
+        # Нижний левый угол
+        painter.drawLine(QPointF(4, h - 4), QPointF(4 + bracket_len, h - 4))
+        painter.drawLine(QPointF(4, h - 4), QPointF(4, h - 4 - bracket_len))
+
+        # Нижний правый угол
+        painter.drawLine(QPointF(w - 4, h - 4), QPointF(w - 4 - bracket_len, h - 4))
+        painter.drawLine(QPointF(w - 4, h - 4), QPointF(w - 4, h - 4 - bracket_len))
+
+        # 4. Стильный верхний HUD-бейдж по центру
+        badge_w = 280.0
+        badge_h = 24.0
+        badge_x = (w - badge_w) / 2.0
+        badge_y = 6.0
+
+        painter.setPen(QPen(QColor(*glow_rgb, int(180 * pulse)), 1.5))
+        painter.setBrush(QBrush(QColor(15, 23, 42, int(220 * pulse))))
+        painter.drawRoundedRect(QRectF(badge_x, badge_y, badge_w, badge_h), 6.0, 6.0)
+
+        # Текст внутри бейджа
+        painter.setPen(QColor(255, 255, 255, int(240 * pulse)))
+        font = QFont("Segoe UI", 9, QFont.Weight.DemiBold)
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.5)
+        painter.setFont(font)
+        painter.drawText(
+            QRectF(badge_x, badge_y, badge_w, badge_h),
+            Qt.AlignmentFlag.AlignCenter,
+            self._status_text
+        )
+</file>
 
 <file path="docs/architecture/api.md">
 > [!NOTE]
@@ -1940,14 +2138,109 @@ class AudioDucker:
 <file path="gui/floating_pill.py">
 """
 Плавающий полупрозрачный индикатор статуса («пилюля») у нижнего края экрана.
-Отображает статус записи («Слушаю...»), уровень голоса и распознаваемый текст.
+Отображает статус записи («Слушаю...»), уровень голоса в виде неонового эквалайзера и распознаваемый текст.
 """
-from PyQt6.QtCore import Qt, QTimer, QPoint
+import math
+from typing import Optional
+from PyQt6.QtCore import Qt, QTimer, QPoint, QRectF, QPointF
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QLabel, QGraphicsDropShadowEffect
-from PyQt6.QtGui import QColor, QFont, QGuiApplication, QCursor
+from PyQt6.QtGui import (
+    QColor, QFont, QGuiApplication, QCursor, QPainter,
+    QBrush, QLinearGradient, QPen
+)
+
+
+class AudioWaveVisualizer(QWidget):
+    """
+    Анимированный спектральный эквалайзер в стиле Jarvis HUD (5 полос спектра).
+    Отображает плавный динамический танец волн при звуках речи
+    и мягкое гармоническое дыхание в тишине.
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(38, 24)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._vu_level = 0.0
+        self._phase = 0.0
+        self._mode = "listening"  # "listening", "step", "executing", "error"
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(33)  # ~30 FPS
+        self._timer.timeout.connect(self._on_tick)
+        self._timer.start()
+
+    def set_vu_level(self, level: float) -> None:
+        """Передает текущий RMS уровень микрофона от 0.0 до 1.0."""
+        self._vu_level = max(0.0, min(1.0, float(level)))
+
+    def set_mode(self, mode: str) -> None:
+        """Переключает цветовую схему спектра."""
+        self._mode = mode
+        self.update()
+
+    def _on_tick(self) -> None:
+        self._phase += 0.22
+        if self._phase > 2 * math.pi:
+            self._phase -= 2 * math.pi
+        if self.isVisible():
+            self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        bar_count = 5
+        bar_width = 3.5
+        gap = 3.5
+        total_width = bar_count * bar_width + (bar_count - 1) * gap
+        start_x = (self.width() - total_width) / 2.0
+        max_h = float(self.height() - 4)
+        center_y = self.height() / 2.0
+
+        # Цветовые темы
+        if self._mode == "executing":
+            color_top = QColor(52, 211, 153)    # Изумрудный светлый
+            color_bot = QColor(16, 185, 129)    # Изумрудный темный
+        elif self._mode == "error":
+            color_top = QColor(248, 113, 113)   # Красный светлый
+            color_bot = QColor(239, 68, 68)     # Красный темный
+        elif self._mode == "step":
+            color_top = QColor(56, 189, 248)    # Неоновый голубой
+            color_bot = QColor(14, 165, 233)    # Лазурный
+        else:
+            # Режим listening: Неоновый циан Jarvis -> Фиолетовый градиент
+            color_top = QColor(0, 240, 255)     # Neon Cyan
+            color_bot = QColor(139, 92, 246)    # Violet
+
+        # Симметричные коэффициенты высот для красивой дуговой формы
+        multipliers = [0.45, 0.75, 1.0, 0.75, 0.45]
+
+        for i in range(bar_count):
+            wave_mod = 0.5 + 0.5 * math.sin(self._phase + i * 0.9)
+            audio_factor = self._vu_level * 1.8
+            h = 4.0 + (max_h - 4.0) * (0.25 * wave_mod + 0.75 * min(1.0, audio_factor)) * multipliers[i]
+            h = max(3.5, min(max_h, h))
+
+            x = start_x + i * (bar_width + gap)
+            y = center_y - h / 2.0
+
+            grad = QLinearGradient(x, y, x, y + h)
+            grad.setColorAt(0.0, color_top)
+            grad.setColorAt(1.0, color_bot)
+
+            painter.setBrush(QBrush(grad))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(QRectF(x, y, bar_width, h), 1.75, 1.75)
+
 
 class FloatingPill(QWidget):
-    def __init__(self, parent=None):
+    """
+    Плавающий HUD-индикатор у нижнего края экрана.
+    Отображает спектральный анализатор голоса, статус и распознаваемый текст.
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
 
         # Окно без рамок, поверх всех окон, скрыто из панели задач
@@ -1960,18 +2253,50 @@ class FloatingPill(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
 
         self.setFixedHeight(50)
-        self.setMinimumWidth(260)
+        self.setMinimumWidth(280)
+
+        # Стили границ и фона для различных состояний (Frosted Dark Glass)
+        self._style_default = """
+            QWidget {
+                background-color: rgba(15, 23, 42, 235);
+                border: 1.5px solid rgba(0, 240, 255, 60);
+                border-radius: 25px;
+            }
+        """
+        self._style_listening = """
+            QWidget {
+                background-color: rgba(15, 23, 42, 245);
+                border: 1.5px solid rgba(0, 240, 255, 210);
+                border-radius: 25px;
+            }
+        """
+        self._style_executing = """
+            QWidget {
+                background-color: rgba(15, 23, 42, 245);
+                border: 1.5px solid rgba(16, 185, 129, 210);
+                border-radius: 25px;
+            }
+        """
+        self._style_error = """
+            QWidget {
+                background-color: rgba(15, 23, 42, 245);
+                border: 1.5px solid rgba(239, 68, 68, 210);
+                border-radius: 25px;
+            }
+        """
 
         # Компоновка
         layout = QHBoxLayout(self)
         layout.setContentsMargins(18, 6, 18, 6)
         layout.setSpacing(12)
 
-        # Индикатор (точка активности)
+        # Спектральный анализатор волны Jarvis
+        self.wave = AudioWaveVisualizer(self)
+        layout.addWidget(self.wave)
+
+        # Скрытая точка активности для сохранения обратной совместимости
         self.dot = QLabel("●", self)
-        self.dot.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
-        self.dot.setStyleSheet("color: #3B82F6;")
-        layout.addWidget(self.dot)
+        self.dot.hide()
 
         # Текст распознанной фразы / статус
         self.label = QLabel("Слушаю...", self)
@@ -1979,21 +2304,14 @@ class FloatingPill(QWidget):
         self.label.setStyleSheet("color: #FFFFFF;")
         layout.addWidget(self.label)
 
-        # Тень для красивого отделения от фона любого приложения
+        # Мягкая неоновая тень для отделения от любого светлого или темного фона
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(24)
-        shadow.setColor(QColor(0, 0, 0, 180))
+        shadow.setColor(QColor(0, 240, 255, 70))
         shadow.setOffset(0, 4)
         self.setGraphicsEffect(shadow)
 
-        self.setStyleSheet("""
-            QWidget {
-                background-color: rgba(18, 19, 22, 235);
-                border: 1px solid rgba(255, 255, 255, 35);
-                border-radius: 25px;
-            }
-        """)
-
+        self.setStyleSheet(self._style_default)
         self._mode = "idle"
 
         # Таймер скрытия
@@ -2005,7 +2323,7 @@ class FloatingPill(QWidget):
         self._mode = "idle"
         self.hide()
 
-    def _reposition(self):
+    def _reposition(self) -> None:
         """Размещает пилюлю по центру внизу экрана, где находится курсор мыши."""
         screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
         if screen:
@@ -2015,33 +2333,24 @@ class FloatingPill(QWidget):
             self.move(x, y)
 
     def update_vu(self, level: float) -> None:
-        """Обновляет пульсацию точки активности в зависимости от уровня громкости голоса."""
+        """Передает уровень громкости голоса в спектральный анализатор."""
         if not self.isVisible() or self._mode != "listening":
             return
-        lvl = max(0.0, min(1.0, float(level)))
-        if lvl > 0.6:
-            color = "#93C5FD"
-            size = 16
-        elif lvl > 0.2:
-            color = "#60A5FA"
-            size = 15
-        else:
-            color = "#3B82F6"
-            size = 14
-        self.dot.setFont(QFont("Segoe UI", size, QFont.Weight.Bold))
-        self.dot.setStyleSheet(f"color: {color};")
+        self.wave.set_vu_level(level)
 
-    def show_listening(self):
-        """Переводит индикатор в режим прослушивания."""
+    def show_listening(self) -> None:
+        """Переводит индикатор в эстетичный режим прослушивания Jarvis."""
         self._mode = "listening"
         self._hide_timer.stop()
-        self.dot.setStyleSheet("color: #3B82F6;")  # Синий пульс
+        self.setStyleSheet(self._style_listening)
+        self.wave.set_mode("listening")
         self.label.setText("Слушаю...")
         self.adjustSize()
         self._reposition()
         self.show()
+        self.raise_()
 
-    def update_text(self, text: str):
+    def update_text(self, text: str) -> None:
         """Обновляет распознанный текст прямо во время речи."""
         self._hide_timer.stop()
         display = text.strip() or "Слушаю..."
@@ -2057,7 +2366,8 @@ class FloatingPill(QWidget):
         """Показывает текущий промежуточный шаг выполнения Vision-агента."""
         self._mode = "step"
         self._hide_timer.stop()
-        self.dot.setStyleSheet("color: #38BDF8;")  # Неоновый голубой (активное действие агента)
+        self.setStyleSheet(self._style_listening)
+        self.wave.set_mode("step")
         display = f"[{step}/{max_steps}] {action_text.strip()}"
         if len(display) > 58:
             display = display[:55] + "..."
@@ -2067,21 +2377,23 @@ class FloatingPill(QWidget):
         self.show()
         self.raise_()
 
-    def show_executing(self, action_name: str = "Выполняю..."):
-        """Показывает статус выполнения действия."""
+    def show_executing(self, action_name: str = "Выполняю...") -> None:
+        """Показывает статус выполнения действия с изумрудным подтверждением."""
         self._mode = "executing"
-        self.dot.setStyleSheet("color: #10B981;")  # Зеленый свет
+        self.setStyleSheet(self._style_executing)
+        self.wave.set_mode("executing")
         self.label.setText(action_name)
         self.adjustSize()
         self._reposition()
         self.show()
         self.raise_()
-        self._hide_timer.start(2000)  # Скрываем через 2.0 сек после завершения
+        self._hide_timer.start(2000)
 
-    def show_error(self, message: str = "Не удалось распознать"):
-        """Показывает статус ошибки."""
+    def show_error(self, message: str = "Не удалось распознать") -> None:
+        """Показывает статус ошибки с рубиновой индикацией."""
         self._mode = "error"
-        self.dot.setStyleSheet("color: #EF4444;")  # Красный свет
+        self.setStyleSheet(self._style_error)
+        self.wave.set_mode("error")
         self.label.setText(message)
         self.adjustSize()
         self._reposition()
@@ -2096,7 +2408,7 @@ class ClickIndicatorOverlay(QWidget):
     Показывает точное место действия Vision-агента на экране Windows.
     """
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
@@ -2138,9 +2450,6 @@ class ClickIndicatorOverlay(QWidget):
         self.update()
 
     def paintEvent(self, event) -> None:
-        from PyQt6.QtGui import QPainter, QPen, QBrush
-        from PyQt6.QtCore import QPointF
-
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
@@ -3669,18 +3978,21 @@ def test_gui_components():
     app = QApplication.instance() or QApplication(sys.argv)
 
     from gui.main_window import MainWindow
-    from gui.floating_pill import FloatingPill
+    from gui.floating_pill import FloatingPill, AudioWaveVisualizer
     from gui.spotlight_bar import SpotlightBar
     from gui.tray_manager import TrayManager
+    from gui.screen_glow import ScreenGlowOverlay
 
     config_path = os.path.join(PROJECT_DIR, "config", "settings.json")
     window = MainWindow(config_path)
     pill = FloatingPill()
     spotlight = SpotlightBar()
     tray = TrayManager()
+    screen_glow = ScreenGlowOverlay()
 
     print(f"  [OK] MainWindow создано с заголовком: '{window.windowTitle()}'")
-    print(f"  [OK] FloatingPill создан (флаги: StayOnTop, Frameless, Translucent)")
+    print(f"  [OK] FloatingPill создан с AudioWaveVisualizer (флаги: StayOnTop, Frameless, Translucent)")
+    print(f"  [OK] ScreenGlowOverlay создан (контурная неоновая подсветка экрана, WS_EX_TRANSPARENT)")
     print(f"  [OK] SpotlightBar создан (с подсказками и историей команд)")
     print(f"  [OK] TrayManager инициализирован.")
     
@@ -7346,6 +7658,93 @@ class TestRegressionsAndProblemFixes(unittest.TestCase):
         self.assertEqual(yt_history["target"], "https://www.youtube.com/feed/history")
 
 
+class TestVisualFeedbackAndScreenGlow(unittest.TestCase):
+    """Тестирование эстетичной индикации голоса и контурной подсветки экрана."""
+
+    @classmethod
+    def setUpClass(cls):
+        import sys
+        from PyQt6.QtWidgets import QApplication
+        cls.app = QApplication.instance() or QApplication(sys.argv)
+
+    def test_audio_wave_visualizer(self):
+        """Проверка работы AudioWaveVisualizer (5 полос спектра, фазы, VU-уровни)."""
+        from gui.floating_pill import AudioWaveVisualizer
+        wave = AudioWaveVisualizer()
+        self.assertEqual(wave.width(), 38)
+        self.assertEqual(wave.height(), 24)
+        self.assertEqual(wave._vu_level, 0.0)
+
+        # Проверка установки уровня громкости
+        wave.set_vu_level(0.65)
+        self.assertAlmostEqual(wave._vu_level, 0.65)
+        wave.set_vu_level(-0.5)
+        self.assertEqual(wave._vu_level, 0.0)
+        wave.set_vu_level(2.0)
+        self.assertEqual(wave._vu_level, 1.0)
+
+        # Проверка переключения режимов
+        for mode in ("listening", "step", "executing", "error"):
+            wave.set_mode(mode)
+            self.assertEqual(wave._mode, mode)
+
+        # Проверка шага анимации
+        init_phase = wave._phase
+        wave._on_tick()
+        self.assertGreater(wave._phase, init_phase)
+
+    def test_floating_pill_with_wave(self):
+        """Проверка работы FloatingPill с интегрированным AudioWaveVisualizer."""
+        from gui.floating_pill import FloatingPill
+        pill = FloatingPill()
+
+        # Режим прослушивания
+        pill.show_listening()
+        self.assertEqual(pill._mode, "listening")
+        self.assertEqual(pill.label.text(), "Слушаю...")
+        self.assertEqual(pill.wave._mode, "listening")
+
+        # Передача уровня звука
+        pill.update_vu(0.85)
+        self.assertAlmostEqual(pill.wave._vu_level, 0.85)
+
+        # Шаг Vision-агента
+        pill.show_step(1, 5, "Поиск кнопки Вход")
+        self.assertEqual(pill._mode, "step")
+        self.assertIn("1/5", pill.label.text())
+
+        # Выполнение действия
+        pill.show_executing("Клик выполнен")
+        self.assertEqual(pill._mode, "executing")
+        self.assertEqual(pill.wave._mode, "executing")
+
+        # Ошибка
+        pill.show_error("Элемент не найден")
+        self.assertEqual(pill._mode, "error")
+        self.assertEqual(pill.wave._mode, "error")
+
+    def test_screen_glow_overlay(self):
+        """Проверка полноэкранного оверлея контурной подсветки экрана ScreenGlowOverlay."""
+        from gui.screen_glow import ScreenGlowOverlay
+        glow = ScreenGlowOverlay()
+        self.assertFalse(glow._anim_timer.isActive())
+
+        # Запуск неоновой подсветки
+        glow.start_glow(text="JARVIS • АКТИВЕН")
+        self.assertTrue(glow._anim_timer.isActive())
+        self.assertEqual(glow._status_text, "JARVIS • АКТИВЕН")
+
+        # Проверка шага анимации дыхания
+        init_phase = glow._phase
+        glow._on_anim_frame()
+        self.assertGreater(glow._phase, init_phase)
+
+        # Остановка подсветки
+        glow.stop_glow()
+        self.assertFalse(glow._anim_timer.isActive())
+        self.assertFalse(glow.isVisible())
+
+
 if __name__ == "__main__":
     unittest.main()
 </file>
@@ -7378,6 +7777,7 @@ from core.vision_agent import VisionAgentProcessManager
 from gui.main_window import MainWindow
 from gui.tray_manager import TrayManager
 from gui.floating_pill import FloatingPill, ClickIndicatorOverlay
+from gui.screen_glow import ScreenGlowOverlay
 from gui.spotlight_bar import SpotlightBar
 from create_shortcut import create_desktop_shortcut
 
@@ -7399,6 +7799,8 @@ class AppCoordinator(QObject):
     card_status_signal = pyqtSignal(str, str, str)
     check_all_done_signal = pyqtSignal(bool, str)
     tray_state_signal = pyqtSignal(str)
+    screen_glow_start_signal = pyqtSignal(str)
+    screen_glow_stop_signal = pyqtSignal()
 
     def __init__(self, is_minimized: bool = False):
         super().__init__()
@@ -7411,6 +7813,7 @@ class AppCoordinator(QObject):
         self.tray = TrayManager()
         self.pill = FloatingPill()
         self.click_overlay = ClickIndicatorOverlay()
+        self.screen_glow = ScreenGlowOverlay()
         self.spotlight = SpotlightBar()
 
         # 2. Инициализация ядра с сохраненными настройками
@@ -7515,6 +7918,8 @@ class AppCoordinator(QObject):
         self.pill_executing_signal.connect(self.pill.show_executing)
         self.pill_error_signal.connect(self.pill.show_error)
         self.pill_listening_signal.connect(self.pill.show_listening)
+        self.screen_glow_start_signal.connect(self.screen_glow.start_glow)
+        self.screen_glow_stop_signal.connect(self.screen_glow.stop_glow)
 
         # Сигналы окон и трея
         self.window.agent_toggle_requested.connect(self.toggle_agent)
@@ -7988,6 +8393,7 @@ class AppCoordinator(QObject):
                     self.log(f"🤖 [Vision] {msg}")
             elif ev_type == "task_started":
                 self.pill.show_step(1, max_steps, "Анализирую экран...")
+                self.screen_glow_start_signal.emit("JARVIS • АНАЛИЗ И УПРАВЛЕНИЕ ЭКРАНОМ")
                 self.log(f"Vision-агент начал выполнение: «{ev.get('prompt', '')}»")
             elif ev_type == "step_status":
                 step = ev.get("step", 1)
@@ -8005,6 +8411,7 @@ class AppCoordinator(QObject):
                 y = ev.get("y", 0)
                 self.click_overlay.show_click(x, y)
             elif ev_type == "confirmation_requested":
+                self.screen_glow_stop_signal.emit()
                 msg_text = ev.get("message", "Действие требует подтверждения.")
                 self.log(f"⚠ Vision-агент запросил подтверждение: {msg_text}")
                 msg_box = QMessageBox(self.window)
@@ -8021,13 +8428,16 @@ class AppCoordinator(QObject):
                     self.pill.show_error("Отменено")
                     self.log("Действие Vision-агента отменено пользователем.")
                 else:
+                    self.screen_glow_start_signal.emit("JARVIS • АНАЛИЗ И УПРАВЛЕНИЕ ЭКРАНОМ")
                     self.log("Действие Vision-агента разрешено пользователем.")
             elif ev_type == "interrupted":
+                self.screen_glow_stop_signal.emit()
                 reason = ev.get("reason", "Прервано пользователем")
                 self.pill.show_error(reason)
                 self.log(f"⚠ Vision-агент прерван: {reason}")
                 self._play_sound("error")
             elif ev_type == "task_completed":
+                self.screen_glow_stop_signal.emit()
                 success = ev.get("success", False)
                 message = ev.get("message", "Готово")
                 if success:
@@ -8041,6 +8451,7 @@ class AppCoordinator(QObject):
                     self.log(f"⚠ Задача не завершена: {message}")
                     self._play_sound("error")
             elif ev_type == "error":
+                self.screen_glow_stop_signal.emit()
                 self.window.set_llm_status("error")
                 err = ev.get("message", "Ошибка агента")
                 self.pill.show_error("Ошибка агента")
@@ -8055,6 +8466,7 @@ class AppCoordinator(QObject):
 
         if not enable:
             # Выгружаем модели из VRAM и останавливаем фоновый микрофон
+            self.screen_glow_stop_signal.emit()
             self.listener.stop_wake_word_loop()
             self.stt.unload_model()
             self.decision_engine.unload_model()
@@ -8205,6 +8617,7 @@ class AppCoordinator(QObject):
 
     def exit_app(self):
         """Полное закрытие приложения и освобождение системных ресурсов."""
+        self.screen_glow.stop_glow()
         self.hook.stop()
         self.listener.stop_stream()
         self.stt.unload_model()

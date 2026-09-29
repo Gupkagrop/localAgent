@@ -1,13 +1,108 @@
 """
 Плавающий полупрозрачный индикатор статуса («пилюля») у нижнего края экрана.
-Отображает статус записи («Слушаю...»), уровень голоса и распознаваемый текст.
+Отображает статус записи («Слушаю...»), уровень голоса в виде неонового эквалайзера и распознаваемый текст.
 """
-from PyQt6.QtCore import Qt, QTimer, QPoint
+import math
+from typing import Optional
+from PyQt6.QtCore import Qt, QTimer, QPoint, QRectF, QPointF
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QLabel, QGraphicsDropShadowEffect
-from PyQt6.QtGui import QColor, QFont, QGuiApplication, QCursor
+from PyQt6.QtGui import (
+    QColor, QFont, QGuiApplication, QCursor, QPainter,
+    QBrush, QLinearGradient, QPen
+)
+
+
+class AudioWaveVisualizer(QWidget):
+    """
+    Анимированный спектральный эквалайзер в стиле Jarvis HUD (5 полос спектра).
+    Отображает плавный динамический танец волн при звуках речи
+    и мягкое гармоническое дыхание в тишине.
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(38, 24)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._vu_level = 0.0
+        self._phase = 0.0
+        self._mode = "listening"  # "listening", "step", "executing", "error"
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(33)  # ~30 FPS
+        self._timer.timeout.connect(self._on_tick)
+        self._timer.start()
+
+    def set_vu_level(self, level: float) -> None:
+        """Передает текущий RMS уровень микрофона от 0.0 до 1.0."""
+        self._vu_level = max(0.0, min(1.0, float(level)))
+
+    def set_mode(self, mode: str) -> None:
+        """Переключает цветовую схему спектра."""
+        self._mode = mode
+        self.update()
+
+    def _on_tick(self) -> None:
+        self._phase += 0.22
+        if self._phase > 2 * math.pi:
+            self._phase -= 2 * math.pi
+        if self.isVisible():
+            self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        bar_count = 5
+        bar_width = 3.5
+        gap = 3.5
+        total_width = bar_count * bar_width + (bar_count - 1) * gap
+        start_x = (self.width() - total_width) / 2.0
+        max_h = float(self.height() - 4)
+        center_y = self.height() / 2.0
+
+        # Цветовые темы
+        if self._mode == "executing":
+            color_top = QColor(52, 211, 153)    # Изумрудный светлый
+            color_bot = QColor(16, 185, 129)    # Изумрудный темный
+        elif self._mode == "error":
+            color_top = QColor(248, 113, 113)   # Красный светлый
+            color_bot = QColor(239, 68, 68)     # Красный темный
+        elif self._mode == "step":
+            color_top = QColor(56, 189, 248)    # Неоновый голубой
+            color_bot = QColor(14, 165, 233)    # Лазурный
+        else:
+            # Режим listening: Неоновый циан Jarvis -> Фиолетовый градиент
+            color_top = QColor(0, 240, 255)     # Neon Cyan
+            color_bot = QColor(139, 92, 246)    # Violet
+
+        # Симметричные коэффициенты высот для красивой дуговой формы
+        multipliers = [0.45, 0.75, 1.0, 0.75, 0.45]
+
+        for i in range(bar_count):
+            wave_mod = 0.5 + 0.5 * math.sin(self._phase + i * 0.9)
+            audio_factor = self._vu_level * 1.8
+            h = 4.0 + (max_h - 4.0) * (0.25 * wave_mod + 0.75 * min(1.0, audio_factor)) * multipliers[i]
+            h = max(3.5, min(max_h, h))
+
+            x = start_x + i * (bar_width + gap)
+            y = center_y - h / 2.0
+
+            grad = QLinearGradient(x, y, x, y + h)
+            grad.setColorAt(0.0, color_top)
+            grad.setColorAt(1.0, color_bot)
+
+            painter.setBrush(QBrush(grad))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(QRectF(x, y, bar_width, h), 1.75, 1.75)
+
 
 class FloatingPill(QWidget):
-    def __init__(self, parent=None):
+    """
+    Плавающий HUD-индикатор у нижнего края экрана.
+    Отображает спектральный анализатор голоса, статус и распознаваемый текст.
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
 
         # Окно без рамок, поверх всех окон, скрыто из панели задач
@@ -20,18 +115,50 @@ class FloatingPill(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
 
         self.setFixedHeight(50)
-        self.setMinimumWidth(260)
+        self.setMinimumWidth(280)
+
+        # Стили границ и фона для различных состояний (Frosted Dark Glass)
+        self._style_default = """
+            QWidget {
+                background-color: rgba(15, 23, 42, 235);
+                border: 1.5px solid rgba(0, 240, 255, 60);
+                border-radius: 25px;
+            }
+        """
+        self._style_listening = """
+            QWidget {
+                background-color: rgba(15, 23, 42, 245);
+                border: 1.5px solid rgba(0, 240, 255, 210);
+                border-radius: 25px;
+            }
+        """
+        self._style_executing = """
+            QWidget {
+                background-color: rgba(15, 23, 42, 245);
+                border: 1.5px solid rgba(16, 185, 129, 210);
+                border-radius: 25px;
+            }
+        """
+        self._style_error = """
+            QWidget {
+                background-color: rgba(15, 23, 42, 245);
+                border: 1.5px solid rgba(239, 68, 68, 210);
+                border-radius: 25px;
+            }
+        """
 
         # Компоновка
         layout = QHBoxLayout(self)
         layout.setContentsMargins(18, 6, 18, 6)
         layout.setSpacing(12)
 
-        # Индикатор (точка активности)
+        # Спектральный анализатор волны Jarvis
+        self.wave = AudioWaveVisualizer(self)
+        layout.addWidget(self.wave)
+
+        # Скрытая точка активности для сохранения обратной совместимости
         self.dot = QLabel("●", self)
-        self.dot.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
-        self.dot.setStyleSheet("color: #3B82F6;")
-        layout.addWidget(self.dot)
+        self.dot.hide()
 
         # Текст распознанной фразы / статус
         self.label = QLabel("Слушаю...", self)
@@ -39,21 +166,14 @@ class FloatingPill(QWidget):
         self.label.setStyleSheet("color: #FFFFFF;")
         layout.addWidget(self.label)
 
-        # Тень для красивого отделения от фона любого приложения
+        # Мягкая неоновая тень для отделения от любого светлого или темного фона
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(24)
-        shadow.setColor(QColor(0, 0, 0, 180))
+        shadow.setColor(QColor(0, 240, 255, 70))
         shadow.setOffset(0, 4)
         self.setGraphicsEffect(shadow)
 
-        self.setStyleSheet("""
-            QWidget {
-                background-color: rgba(18, 19, 22, 235);
-                border: 1px solid rgba(255, 255, 255, 35);
-                border-radius: 25px;
-            }
-        """)
-
+        self.setStyleSheet(self._style_default)
         self._mode = "idle"
 
         # Таймер скрытия
@@ -65,7 +185,7 @@ class FloatingPill(QWidget):
         self._mode = "idle"
         self.hide()
 
-    def _reposition(self):
+    def _reposition(self) -> None:
         """Размещает пилюлю по центру внизу экрана, где находится курсор мыши."""
         screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
         if screen:
@@ -75,33 +195,24 @@ class FloatingPill(QWidget):
             self.move(x, y)
 
     def update_vu(self, level: float) -> None:
-        """Обновляет пульсацию точки активности в зависимости от уровня громкости голоса."""
+        """Передает уровень громкости голоса в спектральный анализатор."""
         if not self.isVisible() or self._mode != "listening":
             return
-        lvl = max(0.0, min(1.0, float(level)))
-        if lvl > 0.6:
-            color = "#93C5FD"
-            size = 16
-        elif lvl > 0.2:
-            color = "#60A5FA"
-            size = 15
-        else:
-            color = "#3B82F6"
-            size = 14
-        self.dot.setFont(QFont("Segoe UI", size, QFont.Weight.Bold))
-        self.dot.setStyleSheet(f"color: {color};")
+        self.wave.set_vu_level(level)
 
-    def show_listening(self):
-        """Переводит индикатор в режим прослушивания."""
+    def show_listening(self) -> None:
+        """Переводит индикатор в эстетичный режим прослушивания Jarvis."""
         self._mode = "listening"
         self._hide_timer.stop()
-        self.dot.setStyleSheet("color: #3B82F6;")  # Синий пульс
+        self.setStyleSheet(self._style_listening)
+        self.wave.set_mode("listening")
         self.label.setText("Слушаю...")
         self.adjustSize()
         self._reposition()
         self.show()
+        self.raise_()
 
-    def update_text(self, text: str):
+    def update_text(self, text: str) -> None:
         """Обновляет распознанный текст прямо во время речи."""
         self._hide_timer.stop()
         display = text.strip() or "Слушаю..."
@@ -117,7 +228,8 @@ class FloatingPill(QWidget):
         """Показывает текущий промежуточный шаг выполнения Vision-агента."""
         self._mode = "step"
         self._hide_timer.stop()
-        self.dot.setStyleSheet("color: #38BDF8;")  # Неоновый голубой (активное действие агента)
+        self.setStyleSheet(self._style_listening)
+        self.wave.set_mode("step")
         display = f"[{step}/{max_steps}] {action_text.strip()}"
         if len(display) > 58:
             display = display[:55] + "..."
@@ -127,21 +239,23 @@ class FloatingPill(QWidget):
         self.show()
         self.raise_()
 
-    def show_executing(self, action_name: str = "Выполняю..."):
-        """Показывает статус выполнения действия."""
+    def show_executing(self, action_name: str = "Выполняю...") -> None:
+        """Показывает статус выполнения действия с изумрудным подтверждением."""
         self._mode = "executing"
-        self.dot.setStyleSheet("color: #10B981;")  # Зеленый свет
+        self.setStyleSheet(self._style_executing)
+        self.wave.set_mode("executing")
         self.label.setText(action_name)
         self.adjustSize()
         self._reposition()
         self.show()
         self.raise_()
-        self._hide_timer.start(2000)  # Скрываем через 2.0 сек после завершения
+        self._hide_timer.start(2000)
 
-    def show_error(self, message: str = "Не удалось распознать"):
-        """Показывает статус ошибки."""
+    def show_error(self, message: str = "Не удалось распознать") -> None:
+        """Показывает статус ошибки с рубиновой индикацией."""
         self._mode = "error"
-        self.dot.setStyleSheet("color: #EF4444;")  # Красный свет
+        self.setStyleSheet(self._style_error)
+        self.wave.set_mode("error")
         self.label.setText(message)
         self.adjustSize()
         self._reposition()
@@ -156,7 +270,7 @@ class ClickIndicatorOverlay(QWidget):
     Показывает точное место действия Vision-агента на экране Windows.
     """
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
@@ -198,9 +312,6 @@ class ClickIndicatorOverlay(QWidget):
         self.update()
 
     def paintEvent(self, event) -> None:
-        from PyQt6.QtGui import QPainter, QPen, QBrush
-        from PyQt6.QtCore import QPointF
-
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
@@ -224,4 +335,3 @@ class ClickIndicatorOverlay(QWidget):
         painter.setPen(center_pen)
         painter.setBrush(QBrush(QColor(0, 240, 255, alpha)))
         painter.drawEllipse(QPointF(center_x, center_y), 4.0, 4.0)
-

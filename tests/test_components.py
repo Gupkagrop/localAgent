@@ -638,5 +638,93 @@ class TestRegressionsAndProblemFixes(unittest.TestCase):
         self.assertEqual(yt_history["target"], "https://www.youtube.com/feed/history")
 
 
+class TestVisualFeedbackAndScreenGlow(unittest.TestCase):
+    """Тестирование эстетичной индикации голоса и контурной подсветки экрана."""
+
+    @classmethod
+    def setUpClass(cls):
+        import sys
+        from PyQt6.QtWidgets import QApplication
+        cls.app = QApplication.instance() or QApplication(sys.argv)
+
+    def test_audio_wave_visualizer(self):
+        """Проверка работы AudioWaveVisualizer (5 полос спектра, фазы, VU-уровни)."""
+        from gui.floating_pill import AudioWaveVisualizer
+        wave = AudioWaveVisualizer()
+        self.assertEqual(wave.width(), 38)
+        self.assertEqual(wave.height(), 24)
+        self.assertEqual(wave._vu_level, 0.0)
+
+        # Проверка установки уровня громкости
+        wave.set_vu_level(0.65)
+        self.assertAlmostEqual(wave._vu_level, 0.65)
+        wave.set_vu_level(-0.5)
+        self.assertEqual(wave._vu_level, 0.0)
+        wave.set_vu_level(2.0)
+        self.assertEqual(wave._vu_level, 1.0)
+
+        # Проверка переключения режимов
+        for mode in ("listening", "step", "executing", "error"):
+            wave.set_mode(mode)
+            self.assertEqual(wave._mode, mode)
+
+        # Проверка шага анимации
+        init_phase = wave._phase
+        wave._on_tick()
+        self.assertGreater(wave._phase, init_phase)
+
+    def test_floating_pill_with_wave(self):
+        """Проверка работы FloatingPill с интегрированным AudioWaveVisualizer."""
+        from gui.floating_pill import FloatingPill
+        pill = FloatingPill()
+
+        # Режим прослушивания
+        pill.show_listening()
+        self.assertEqual(pill._mode, "listening")
+        self.assertEqual(pill.label.text(), "Слушаю...")
+        self.assertEqual(pill.wave._mode, "listening")
+
+        # Передача уровня звука
+        pill.update_vu(0.85)
+        self.assertAlmostEqual(pill.wave._vu_level, 0.85)
+
+        # Шаг Vision-агента
+        pill.show_step(1, 5, "Поиск кнопки Вход")
+        self.assertEqual(pill._mode, "step")
+        self.assertIn("1/5", pill.label.text())
+
+        # Выполнение действия
+        pill.show_executing("Клик выполнен")
+        self.assertEqual(pill._mode, "executing")
+        self.assertEqual(pill.wave._mode, "executing")
+
+        # Ошибка
+        pill.show_error("Элемент не найден")
+        self.assertEqual(pill._mode, "error")
+        self.assertEqual(pill.wave._mode, "error")
+
+    def test_screen_glow_overlay(self):
+        """Проверка полноэкранного оверлея контурной подсветки экрана ScreenGlowOverlay."""
+        from gui.screen_glow import ScreenGlowOverlay
+        glow = ScreenGlowOverlay()
+        self.assertFalse(glow._anim_timer.isActive())
+
+        # Запуск неоновой подсветки
+        glow.start_glow(text="JARVIS • АКТИВЕН")
+        self.assertTrue(glow._anim_timer.isActive())
+        self.assertEqual(glow._status_text, "JARVIS • АКТИВЕН")
+
+        # Проверка шага анимации дыхания
+        init_phase = glow._phase
+        glow._on_anim_frame()
+        self.assertGreater(glow._phase, init_phase)
+
+        # Остановка подсветки
+        glow.stop_glow()
+        self.assertFalse(glow._anim_timer.isActive())
+        self.assertFalse(glow.isVisible())
+
+
 if __name__ == "__main__":
     unittest.main()
+

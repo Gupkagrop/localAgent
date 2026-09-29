@@ -25,6 +25,7 @@ from core.vision_agent import VisionAgentProcessManager
 from gui.main_window import MainWindow
 from gui.tray_manager import TrayManager
 from gui.floating_pill import FloatingPill, ClickIndicatorOverlay
+from gui.screen_glow import ScreenGlowOverlay
 from gui.spotlight_bar import SpotlightBar
 from create_shortcut import create_desktop_shortcut
 
@@ -46,6 +47,8 @@ class AppCoordinator(QObject):
     card_status_signal = pyqtSignal(str, str, str)
     check_all_done_signal = pyqtSignal(bool, str)
     tray_state_signal = pyqtSignal(str)
+    screen_glow_start_signal = pyqtSignal(str)
+    screen_glow_stop_signal = pyqtSignal()
 
     def __init__(self, is_minimized: bool = False):
         super().__init__()
@@ -58,6 +61,7 @@ class AppCoordinator(QObject):
         self.tray = TrayManager()
         self.pill = FloatingPill()
         self.click_overlay = ClickIndicatorOverlay()
+        self.screen_glow = ScreenGlowOverlay()
         self.spotlight = SpotlightBar()
 
         # 2. Инициализация ядра с сохраненными настройками
@@ -162,6 +166,8 @@ class AppCoordinator(QObject):
         self.pill_executing_signal.connect(self.pill.show_executing)
         self.pill_error_signal.connect(self.pill.show_error)
         self.pill_listening_signal.connect(self.pill.show_listening)
+        self.screen_glow_start_signal.connect(self.screen_glow.start_glow)
+        self.screen_glow_stop_signal.connect(self.screen_glow.stop_glow)
 
         # Сигналы окон и трея
         self.window.agent_toggle_requested.connect(self.toggle_agent)
@@ -635,6 +641,7 @@ class AppCoordinator(QObject):
                     self.log(f"🤖 [Vision] {msg}")
             elif ev_type == "task_started":
                 self.pill.show_step(1, max_steps, "Анализирую экран...")
+                self.screen_glow_start_signal.emit("JARVIS • АНАЛИЗ И УПРАВЛЕНИЕ ЭКРАНОМ")
                 self.log(f"Vision-агент начал выполнение: «{ev.get('prompt', '')}»")
             elif ev_type == "step_status":
                 step = ev.get("step", 1)
@@ -652,6 +659,7 @@ class AppCoordinator(QObject):
                 y = ev.get("y", 0)
                 self.click_overlay.show_click(x, y)
             elif ev_type == "confirmation_requested":
+                self.screen_glow_stop_signal.emit()
                 msg_text = ev.get("message", "Действие требует подтверждения.")
                 self.log(f"⚠ Vision-агент запросил подтверждение: {msg_text}")
                 msg_box = QMessageBox(self.window)
@@ -668,13 +676,16 @@ class AppCoordinator(QObject):
                     self.pill.show_error("Отменено")
                     self.log("Действие Vision-агента отменено пользователем.")
                 else:
+                    self.screen_glow_start_signal.emit("JARVIS • АНАЛИЗ И УПРАВЛЕНИЕ ЭКРАНОМ")
                     self.log("Действие Vision-агента разрешено пользователем.")
             elif ev_type == "interrupted":
+                self.screen_glow_stop_signal.emit()
                 reason = ev.get("reason", "Прервано пользователем")
                 self.pill.show_error(reason)
                 self.log(f"⚠ Vision-агент прерван: {reason}")
                 self._play_sound("error")
             elif ev_type == "task_completed":
+                self.screen_glow_stop_signal.emit()
                 success = ev.get("success", False)
                 message = ev.get("message", "Готово")
                 if success:
@@ -688,6 +699,7 @@ class AppCoordinator(QObject):
                     self.log(f"⚠ Задача не завершена: {message}")
                     self._play_sound("error")
             elif ev_type == "error":
+                self.screen_glow_stop_signal.emit()
                 self.window.set_llm_status("error")
                 err = ev.get("message", "Ошибка агента")
                 self.pill.show_error("Ошибка агента")
@@ -702,6 +714,7 @@ class AppCoordinator(QObject):
 
         if not enable:
             # Выгружаем модели из VRAM и останавливаем фоновый микрофон
+            self.screen_glow_stop_signal.emit()
             self.listener.stop_wake_word_loop()
             self.stt.unload_model()
             self.decision_engine.unload_model()
@@ -852,6 +865,7 @@ class AppCoordinator(QObject):
 
     def exit_app(self):
         """Полное закрытие приложения и освобождение системных ресурсов."""
+        self.screen_glow.stop_glow()
         self.hook.stop()
         self.listener.stop_stream()
         self.stt.unload_model()
