@@ -10,6 +10,11 @@ import winsound
 import threading
 from typing import Optional
 
+# Гарантируем, что текущая рабочая директория (CWD) всегда является корневой папкой проекта,
+# даже при автозапуске из системного реестра Windows (где CWD обычно C:\Windows\System32).
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+os.chdir(PROJECT_ROOT)
+
 from PyQt6.QtCore import Qt, pyqtSignal, QObject, QTimer
 from PyQt6.QtWidgets import QApplication, QMessageBox
 

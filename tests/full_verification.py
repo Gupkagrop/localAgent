@@ -255,6 +255,40 @@ def test_vision_computer_use_agent():
         print(f"  [FAIL] Ошибка тестирования Vision-агента: {e}")
         return False
 
+def test_tts_and_autostart():
+    print_section("10. ПРОВЕРКА СИНТЕЗА РЕЧИ (TTS) И АВТОЗАГРУЗКИ WINDOWS")
+    from core.autostart import build_autostart_command, get_pythonw_executable, is_windows_autostart_enabled
+    from core.text_to_speech import TextToSpeech, get_piper_model_paths
+
+    all_ok = True
+
+    # 1. Автозагрузка
+    pythonw = get_pythonw_executable()
+    cmd = build_autostart_command(start_minimized=True)
+    is_autostart = is_windows_autostart_enabled()
+    print(f"  [OK] Исполняемый файл фонового режима: {os.path.basename(pythonw)}")
+    print(f"  [OK] Команда автозапуска (minimized): {cmd}")
+    print(f"  [OK] Статус автозагрузки в реестре HKCU Run: {'Включен' if is_autostart else 'Выключен'}")
+
+    # 2. Text-to-Speech
+    onnx_p, json_p = get_piper_model_paths()
+    if onnx_p and json_p:
+        size_mb = os.path.getsize(onnx_p) / (1024 * 1024)
+        print(f"  [OK] Модель Piper TTS найдена: ru_RU-dmitri-medium ({size_mb:.1f} МБ)")
+    else:
+        print("  [INFO] Модель Piper TTS не обнаружена на диске (доступен фоллбэк на SAPI5)")
+
+    voices = TextToSpeech.get_available_voices()
+    print(f"  [OK] Обнаружено доступных TTS-голосов: {len(voices)}")
+    for v in voices:
+        print(f"       • {v['name']} ({v['id']})")
+
+    if not voices:
+        print("  [WARN] Голоса TTS не найдены в системе.")
+        all_ok = False
+
+    return all_ok
+
 def main():
     print("\n" + "#"*60)
     print("  ЗАПУСК ПОЛНОЙ ВЕРИФИКАЦИИ ANTIGRAVITY VOICE ASSISTANT")
@@ -269,7 +303,8 @@ def main():
         test_keyboard_hook(),
         test_gui_components(),
         test_shortcut_and_configs(),
-        test_vision_computer_use_agent()
+        test_vision_computer_use_agent(),
+        test_tts_and_autostart()
     ]
 
     print_section("ИТОГОВЫЙ СТАТУС ВЕРИФИКАЦИИ")
@@ -280,6 +315,7 @@ def main():
     else:
         print("  [WARN] НЕКОТОРЫЕ КОМПОНЕНТЫ ПОТРЕБУЮТ ВНИМАНИЯ.")
         return 1
+
 
 if __name__ == "__main__":
     sys.exit(main())

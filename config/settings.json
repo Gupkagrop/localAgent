@@ -9,7 +9,7 @@
   "audio_ducking_level": 0.2,
   "sound_cues_enabled": true,
   "tts_enabled": true,
-  "tts_voice": "Microsoft Irina Desktop - Russian",
+  "tts_voice": "piper:ru_RU-dmitri-medium",
   "tts_speed": 1.0,
   "audio_device_index": 1,
   "stt_model": "turbo",

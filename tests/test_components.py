@@ -500,6 +500,65 @@ class TestMainWindowFeatures(unittest.TestCase):
         window.update_status_card("mic", "Тестовый статус", "#34D399")
         self.assertEqual(window.card_mic.status_label.text(), "Тестовый статус")
 
+    def test_main_window_autostart_and_tts_integration(self):
+        """Проверка интеграции чекбокса автозапуска и комбобокса TTS-голосов в MainWindow."""
+        import tempfile
+        from gui.main_window import MainWindow
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            temp_config = os.path.join(tmp_dir, "test_settings.json")
+            with open(temp_config, "w", encoding="utf-8") as f:
+                json.dump({
+                    "autostart_with_windows": False,
+                    "start_minimized": True,
+                    "tts_enabled": False,
+                    "tts_voice": "piper:ru_RU-dmitri-medium"
+                }, f)
+
+            with patch("gui.main_window.set_windows_autostart") as mock_autostart, \
+                 patch("core.text_to_speech.TextToSpeech.get_available_voices", return_value=[
+                     {"id": "piper:ru_RU-dmitri-medium", "name": "Piper Neural TTS (Дмитрий)"},
+                     {"id": "Microsoft Irina Desktop", "name": "SAPI5: Irina"}
+                 ]):
+                mock_autostart.return_value = True
+                window = MainWindow(temp_config)
+
+                # 1. Чекбокс автозапуска: включение
+                window.cb_autostart.setChecked(True)
+                self.assertTrue(window.settings["autostart_with_windows"])
+                mock_autostart.assert_called_with(True, start_minimized=True)
+
+                # Чекбокс автозапуска: отключение
+                window.cb_autostart.setChecked(False)
+                self.assertFalse(window.settings["autostart_with_windows"])
+                mock_autostart.assert_called_with(False, start_minimized=True)
+
+                # Чекбокс минимизации: обновление параметров
+                window.cb_autostart.setChecked(True)
+                mock_autostart.reset_mock()
+                window.cb_start_minimized.setChecked(False)
+                self.assertFalse(window.settings["start_minimized"])
+                mock_autostart.assert_called_with(True, start_minimized=False)
+
+                # 2. Чекбокс TTS и комбобокс голосов
+                self.assertFalse(window.cb_tts_voice.isEnabled())
+                window.cb_tts.setChecked(True)
+                self.assertTrue(window.cb_tts_voice.isEnabled())
+                self.assertTrue(window.settings["tts_enabled"])
+
+                # Выбор голоса в комбобоксе
+                window.cb_tts_voice.setCurrentIndex(1)
+                self.assertEqual(window.settings["tts_voice"], "Microsoft Irina Desktop")
+
+                # Сигнал тестового воспроизведения
+                tts_signals = []
+                window.test_tts_requested.connect(lambda v: tts_signals.append(v))
+                window.btn_test_tts.click()
+                self.assertEqual(len(tts_signals), 1)
+                self.assertEqual(tts_signals[0], "Microsoft Irina Desktop")
+
+
 class TestTrayManager(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -744,6 +803,378 @@ class TestVisualFeedbackAndScreenGlow(unittest.TestCase):
 
             coord.emit_ui_state("glow_stop")
             self.assertFalse(coord.screen_glow.is_active())
+
+
+class TestAutostart(unittest.TestCase):
+    """Модульные тесты функционала автозагрузки Windows (core/autostart.py)."""
+
+    def test_get_pythonw_executable_exists(self):
+        """Проверка возврата pythonw.exe, когда файл существует на диске."""
+        from core.autostart import get_pythonw_executable
+        from unittest.mock import patch
+        with patch("os.path.exists", return_value=True):
+            exe = get_pythonw_executable()
+            self.assertTrue(exe.lower().endswith("pythonw.exe"))
+
+    def test_get_pythonw_executable_fallback(self):
+        """Проверка фоллбэка на sys.executable при отсутствии pythonw.exe."""
+        import sys
+        from core.autostart import get_pythonw_executable
+        from unittest.mock import patch
+        with patch("os.path.exists", return_value=False):
+            exe = get_pythonw_executable()
+            self.assertEqual(exe, sys.executable)
+
+    def test_get_main_script_path(self):
+        """Проверка пути к точке входа main.py."""
+        from core.autostart import get_main_script_path
+        path = get_main_script_path()
+        self.assertTrue(os.path.isabs(path))
+        self.assertTrue(path.lower().endswith("main.py"))
+
+    def test_build_autostart_command(self):
+        """Проверка формирования строки команды автозапуска."""
+        from core.autostart import build_autostart_command
+        cmd_min = build_autostart_command(start_minimized=True)
+        self.assertIn("main.py", cmd_min)
+        self.assertTrue(cmd_min.endswith("--minimized"))
+
+        cmd_norm = build_autostart_command(start_minimized=False)
+        self.assertIn("main.py", cmd_norm)
+        self.assertFalse(cmd_norm.endswith("--minimized"))
+
+    def test_set_windows_autostart_enable(self):
+        """Проверка добавления приложения в реестр автозапуска."""
+        from core.autostart import set_windows_autostart
+        from unittest.mock import patch, MagicMock
+        with patch("core.autostart.winreg.OpenKey") as mock_open, \
+             patch("core.autostart.winreg.SetValueEx") as mock_set:
+            mock_key = MagicMock()
+            mock_open.return_value.__enter__.return_value = mock_key
+
+            res = set_windows_autostart(True, start_minimized=True)
+            self.assertTrue(res)
+            mock_set.assert_called_once()
+            args, _ = mock_set.call_args
+            self.assertIn("--minimized", args[4])
+
+    def test_set_windows_autostart_disable_success(self):
+        """Проверка штатного удаления приложения из реестра автозапуска."""
+        from core.autostart import set_windows_autostart
+        from unittest.mock import patch, MagicMock
+        with patch("core.autostart.winreg.OpenKey") as mock_open, \
+             patch("core.autostart.winreg.DeleteValue") as mock_del:
+            mock_key = MagicMock()
+            mock_open.return_value.__enter__.return_value = mock_key
+
+            res = set_windows_autostart(False)
+            self.assertTrue(res)
+            mock_del.assert_called_once()
+
+    def test_set_windows_autostart_disable_file_not_found(self):
+        """Проверка обработки FileNotFoundError при удалении отсутствующего ключа."""
+        from core.autostart import set_windows_autostart
+        from unittest.mock import patch, MagicMock
+        with patch("core.autostart.winreg.OpenKey") as mock_open, \
+             patch("core.autostart.winreg.DeleteValue", side_effect=FileNotFoundError):
+            mock_key = MagicMock()
+            mock_open.return_value.__enter__.return_value = mock_key
+
+            # Должно вернуть True (удалять нечего — цель достигнута)
+            res = set_windows_autostart(False)
+            self.assertTrue(res)
+
+    def test_set_windows_autostart_exception_handling(self):
+        """Проверка возврата False при системной ошибке доступа к реестру."""
+        from core.autostart import set_windows_autostart
+        from unittest.mock import patch
+        with patch("core.autostart.winreg.OpenKey", side_effect=PermissionError("Отказано в доступе")):
+            res = set_windows_autostart(True)
+            self.assertFalse(res)
+
+    def test_is_windows_autostart_enabled(self):
+        """Проверка функции проверки статуса автозагрузки в реестре."""
+        from core.autostart import is_windows_autostart_enabled
+        from unittest.mock import patch, MagicMock
+
+        # 1. Ключ найден и активен
+        with patch("core.autostart.winreg.OpenKey"), \
+             patch("core.autostart.winreg.QueryValueEx", return_value=('"pythonw.exe" "main.py"', 1)):
+            self.assertTrue(is_windows_autostart_enabled())
+
+        # 2. Ключ пустой
+        with patch("core.autostart.winreg.OpenKey"), \
+             patch("core.autostart.winreg.QueryValueEx", return_value=('', 1)):
+            self.assertFalse(is_windows_autostart_enabled())
+
+        # 3. Ключ не найден (FileNotFoundError)
+        with patch("core.autostart.winreg.OpenKey", side_effect=FileNotFoundError):
+            self.assertFalse(is_windows_autostart_enabled())
+
+        # 4. Другая системная ошибка
+        with patch("core.autostart.winreg.OpenKey", side_effect=OSError("Ошибка реестра")):
+            self.assertFalse(is_windows_autostart_enabled())
+
+    def test_get_autostart_command(self):
+        """Проверка получения команды автозапуска из реестра."""
+        from core.autostart import get_autostart_command
+        from unittest.mock import patch
+
+        with patch("core.autostart.winreg.OpenKey"), \
+             patch("core.autostart.winreg.QueryValueEx", return_value=('"test_cmd"', 1)):
+            self.assertEqual(get_autostart_command(), '"test_cmd"')
+
+        with patch("core.autostart.winreg.OpenKey", side_effect=FileNotFoundError):
+            self.assertIsNone(get_autostart_command())
+
+
+class TestTextToSpeech(unittest.TestCase):
+    """Модульные тесты движка синтеза речи TextToSpeech (core/text_to_speech.py)."""
+
+    def test_get_piper_model_paths_present(self):
+        """Проверка возврата путей к модели Piper при наличии файлов и размере > 1 МБ."""
+        from core.text_to_speech import get_piper_model_paths
+        from unittest.mock import patch
+        with patch("core.text_to_speech.os.path.exists", return_value=True), \
+             patch("core.text_to_speech.os.path.getsize", return_value=60 * 1024 * 1024):
+            onnx_p, json_p = get_piper_model_paths()
+            self.assertIsNotNone(onnx_p)
+            self.assertIsNotNone(json_p)
+            self.assertTrue(onnx_p.endswith(".onnx"))
+            self.assertTrue(json_p.endswith(".onnx.json"))
+
+    def test_get_piper_model_paths_missing_or_corrupt(self):
+        """Проверка возврата None, если веса отсутствуют или повреждены (<= 1 МБ)."""
+        from core.text_to_speech import get_piper_model_paths
+        from unittest.mock import patch
+
+        # Файлов нет
+        with patch("core.text_to_speech.os.path.exists", return_value=False):
+            onnx_p, json_p = get_piper_model_paths()
+            self.assertIsNone(onnx_p)
+            self.assertIsNone(json_p)
+
+        # Файл слишком мал (<= 1 МБ)
+        with patch("core.text_to_speech.os.path.exists", return_value=True), \
+             patch("core.text_to_speech.os.path.getsize", return_value=500):
+            onnx_p, json_p = get_piper_model_paths()
+            self.assertIsNone(onnx_p)
+            self.assertIsNone(json_p)
+
+    def test_is_piper_requested_logic(self):
+        """Проверка логики выбора движка Piper TTS в зависимости от voice_name и наличия весов."""
+        from core.text_to_speech import TextToSpeech
+        from unittest.mock import patch
+
+        # Явный запрос Piper
+        tts1 = TextToSpeech(voice_name="piper:ru_RU-dmitri-medium")
+        self.assertTrue(tts1._is_piper_requested())
+
+        tts2 = TextToSpeech(voice_name="dmitri")
+        self.assertTrue(tts2._is_piper_requested())
+
+        # Запрос системного голоса SAPI5
+        tts3 = TextToSpeech(voice_name="Microsoft Irina Desktop")
+        self.assertFalse(tts3._is_piper_requested())
+
+        # Без указания голоса: автовыбор на основе наличия весов
+        tts_default = TextToSpeech(voice_name=None)
+        with patch("core.text_to_speech.get_piper_model_paths", return_value=("dummy.onnx", "dummy.json")):
+            self.assertTrue(tts_default._is_piper_requested())
+
+        with patch("core.text_to_speech.get_piper_model_paths", return_value=(None, None)):
+            self.assertFalse(tts_default._is_piper_requested())
+
+    def test_get_available_voices_isolated(self):
+        """Проверка списка доступных голосов с изоляцией от реальной файловой системы."""
+        from core.text_to_speech import TextToSpeech
+        from unittest.mock import patch
+
+        # С весами Piper
+        with patch("core.text_to_speech.get_piper_model_paths", return_value=("model.onnx", "model.json")), \
+             patch("win32com.client.Dispatch"):
+            voices = TextToSpeech.get_available_voices()
+            self.assertTrue(any("piper" in v["id"].lower() for v in voices))
+
+        # Без весов Piper
+        with patch("core.text_to_speech.get_piper_model_paths", return_value=(None, None)), \
+             patch("win32com.client.Dispatch"):
+            voices_no_piper = TextToSpeech.get_available_voices()
+            self.assertFalse(any("piper" in v["id"].lower() for v in voices_no_piper))
+
+    def test_speed_scaling_to_length_scale(self):
+        """Проверка конвертации параметра скорости speed в length_scale Piper."""
+        from core.text_to_speech import TextToSpeech
+        from unittest.mock import patch, MagicMock
+
+        mock_voice = MagicMock()
+        mock_wav_file = MagicMock()
+
+        # Тест для целого числа: speed=0 -> speed_factor=1.0 -> length_scale=1.0
+        tts_int_0 = TextToSpeech(speed=0)
+        with patch.object(tts_int_0, "_get_piper_voice", return_value=mock_voice), \
+             patch("wave.open"), patch("winsound.PlaySound"):
+            # Проверяем математику конвертации
+            speed_factor = 1.0 + (tts_int_0.speed / 10.0)
+            length_scale = 1.0 / max(0.5, min(2.5, speed_factor))
+            self.assertEqual(length_scale, 1.0)
+
+        # speed=5 -> speed_factor=1.5 -> length_scale=1/1.5 (~0.666)
+        tts_int_5 = TextToSpeech(speed=5)
+        speed_factor = 1.0 + (tts_int_5.speed / 10.0)
+        length_scale = 1.0 / max(0.5, min(2.5, speed_factor))
+        self.assertAlmostEqual(length_scale, 1.0 / 1.5)
+
+        # speed=-5 -> speed_factor=0.5 -> length_scale=2.0
+        tts_int_m5 = TextToSpeech(speed=-5)
+        speed_factor = 1.0 + (tts_int_m5.speed / 10.0)
+        length_scale = 1.0 / max(0.5, min(2.5, speed_factor))
+        self.assertAlmostEqual(length_scale, 2.0)
+
+        # float speed=3.0 -> clamped to 2.5 -> length_scale=0.4
+        tts_float = TextToSpeech(speed=3.0)
+        speed_factor = max(0.5, min(2.5, float(tts_float.speed)))
+        self.assertEqual(speed_factor, 2.5)
+        self.assertEqual(1.0 / speed_factor, 0.4)
+
+    def test_speak_empty_or_whitespace_noop(self):
+        """Проверка игнорирования пустых строк и пробелов при синтезе."""
+        from core.text_to_speech import TextToSpeech
+        from unittest.mock import patch
+        tts = TextToSpeech()
+        with patch.object(tts, "_speak_piper") as mock_piper, \
+             patch.object(tts, "_speak_sapi5") as mock_sapi:
+            tts.speak("", async_mode=False)
+            tts.speak("   \n\t  ", async_mode=False)
+            mock_piper.assert_not_called()
+            mock_sapi.assert_not_called()
+
+    def test_fallback_to_sapi5_when_piper_fails(self):
+        """Проверка прозрачного фоллбэка на Windows SAPI5 при сбое синтеза Piper."""
+        from core.text_to_speech import TextToSpeech
+        from unittest.mock import patch
+
+        tts = TextToSpeech(voice_name="piper:ru_RU-dmitri-medium")
+        with patch.object(tts, "_is_piper_requested", return_value=True), \
+             patch.object(tts, "_speak_piper", return_value=False) as mock_piper, \
+             patch.object(tts, "_speak_sapi5") as mock_sapi:
+            tts.speak("Тестовая фраза для проверки фоллбэка", async_mode=False)
+            mock_piper.assert_called_once_with("Тестовая фраза для проверки фоллбэка")
+            mock_sapi.assert_called_once_with("Тестовая фраза для проверки фоллбэка")
+
+    def test_piper_success_skips_sapi5(self):
+        """Проверка: при успешном синтезе Piper вызов SAPI5 не производится."""
+        from core.text_to_speech import TextToSpeech
+        from unittest.mock import patch
+
+        tts = TextToSpeech(voice_name="piper:ru_RU-dmitri-medium")
+        with patch.object(tts, "_is_piper_requested", return_value=True), \
+             patch.object(tts, "_speak_piper", return_value=True) as mock_piper, \
+             patch.object(tts, "_speak_sapi5") as mock_sapi:
+            tts.speak("Успешный синтез", async_mode=False)
+            mock_piper.assert_called_once()
+            mock_sapi.assert_not_called()
+
+    def test_speak_piper_mocked_playback(self):
+        """Проверка синтеза Piper с передачей сгенерированного WAV в winsound.PlaySound."""
+        from core.text_to_speech import TextToSpeech
+        from unittest.mock import patch, MagicMock
+
+        tts = TextToSpeech(voice_name="piper:ru_RU-dmitri-medium")
+        fake_voice = MagicMock()
+        def fake_synthesize(text, wav_file, syn_config=None):
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(22050)
+            wav_file.writeframes(b"\x00" * 200)
+
+        fake_voice.synthesize_wav.side_effect = fake_synthesize
+
+        with patch.object(tts, "_get_piper_voice", return_value=fake_voice), \
+             patch("winsound.PlaySound") as mock_playsound:
+            res = tts._speak_piper("Привет мир")
+            self.assertTrue(res)
+            mock_playsound.assert_called_once()
+            args, _ = mock_playsound.call_args
+            self.assertTrue(args[0].startswith(b"RIFF"))
+
+    def test_real_piper_synthesis_if_weights_present(self):
+        """Интеграционный тест: реальный синтез через Piper ONNX на CPU, если веса скачаны."""
+        from core.text_to_speech import TextToSpeech, get_piper_model_paths
+        from unittest.mock import patch
+
+        onnx_p, json_p = get_piper_model_paths()
+        if not onnx_p or not json_p:
+            self.skipTest("Веса модели Piper отсутствуют на диске (пропуск реального инференса)")
+
+        tts = TextToSpeech(voice_name="piper:ru_RU-dmitri-medium", speed=1.0)
+        with patch("winsound.PlaySound") as mock_play:
+            tts.speak("Тестовая проверка реального инференса.", async_mode=False)
+            mock_play.assert_called_once()
+            args, _ = mock_play.call_args
+            self.assertTrue(len(args[0]) > 1000)
+
+
+class TestDownloadPiperModel(unittest.TestCase):
+    """Модульные тесты утилиты загрузки весов Piper (scripts/download_piper_model.py)."""
+
+    def test_download_file_success(self):
+        """Проверка успешной потоковой загрузки файла с переименованием .tmp."""
+        import tempfile
+        import io
+        from scripts.download_piper_model import download_file
+        from unittest.mock import patch
+
+        expected_bytes = b"fake_onnx_bytes" * 100
+        fake_response = io.BytesIO(expected_bytes)
+        fake_response.headers = {"Content-Length": str(len(expected_bytes))}
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dest_file = os.path.join(tmp_dir, "model.onnx")
+            with patch("urllib.request.urlopen", return_value=fake_response):
+                ok = download_file("https://example.com/model.onnx", dest_file)
+                self.assertTrue(ok)
+                self.assertTrue(os.path.exists(dest_file))
+                self.assertEqual(os.path.getsize(dest_file), len(expected_bytes))
+
+    def test_download_file_error_cleans_tmp(self):
+        """Проверка очистки временного файла .tmp при ошибке соединения."""
+        import tempfile
+        from scripts.download_piper_model import download_file
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dest_file = os.path.join(tmp_dir, "model.onnx")
+            temp_file = dest_file + ".tmp"
+            with patch("urllib.request.urlopen", side_effect=Exception("Сетевая ошибка")):
+                ok = download_file("https://example.com/model.onnx", dest_file)
+                self.assertFalse(ok)
+                self.assertFalse(os.path.exists(temp_file))
+                self.assertFalse(os.path.exists(dest_file))
+
+    def test_ensure_piper_model_already_downloaded(self):
+        """Проверка возврата путей без повторного скачивания, если файлы уже на диске."""
+        from scripts.download_piper_model import ensure_piper_model
+        from unittest.mock import patch
+
+        with patch("os.path.exists", return_value=True), \
+             patch("os.path.getsize", side_effect=[60 * 1024 * 1024, 2048]), \
+             patch("scripts.download_piper_model.download_file") as mock_dl:
+            onnx_p, json_p = ensure_piper_model("dummy_dir")
+            mock_dl.assert_not_called()
+            self.assertTrue(onnx_p.endswith(".onnx"))
+            self.assertTrue(json_p.endswith(".json"))
+
+    def test_ensure_piper_model_raises_on_download_failure(self):
+        """Проверка выброса RuntimeError при неудаче скачивания весов."""
+        from scripts.download_piper_model import ensure_piper_model
+        from unittest.mock import patch
+
+        with patch("os.path.exists", return_value=False), \
+             patch("scripts.download_piper_model.download_file", return_value=False):
+            with self.assertRaises(RuntimeError):
+                ensure_piper_model("dummy_dir")
+
 
 
 if __name__ == "__main__":

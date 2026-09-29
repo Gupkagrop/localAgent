@@ -21,6 +21,7 @@ from PyQt6.QtGui import QFont, QCloseEvent
 from gui.styles import DARK_THEME_QSS
 from gui.close_dialog import CloseConfirmDialog
 from core.text_to_speech import TextToSpeech
+from core.autostart import set_windows_autostart, is_windows_autostart_enabled
 
 class MainWindow(QMainWindow):
     agent_toggle_requested = pyqtSignal(bool)
@@ -739,28 +740,20 @@ class MainWindow(QMainWindow):
         self._apply_windows_autostart(checked)
 
     def _apply_windows_autostart(self, enable: bool):
-        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-        app_name = "AntigravityVoice"
-        try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS) as key:
-                if enable:
-                    exe_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".venv", "Scripts", "pythonw.exe"))
-                    main_py = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "main.py"))
-                    cmd = f'"{exe_path}" "{main_py}" --minimized'
-                    winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, cmd)
-                    self.log("Автозапуск с Windows включен.")
-                else:
-                    try:
-                        winreg.DeleteValue(key, app_name)
-                        self.log("Автозапуск с Windows отключен.")
-                    except FileNotFoundError:
-                        pass
-        except Exception as e:
-            self.log(f"Ошибка настройки реестра автозапуска: {e}")
+        start_minimized = self.settings.get("start_minimized", True)
+        success = set_windows_autostart(enable, start_minimized=start_minimized)
+        if success:
+            state_str = "включен" if enable else "отключен"
+            self.log(f"Автозапуск с Windows {state_str}.")
+        else:
+            self.log("Ошибка: не удалось обновить параметры автозапуска в реестре Windows.")
 
     def _on_start_minimized_toggled(self, checked: bool):
         self.settings["start_minimized"] = checked
         self.save_settings()
+        # Если автозапуск активен, обновляем флаг --minimized в реестре
+        if self.settings.get("autostart_with_windows", False):
+            self._apply_windows_autostart(True)
 
     def _on_ducking_toggled(self, checked: bool):
         self.settings["audio_ducking_enabled"] = checked
@@ -775,6 +768,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "cb_tts_voice"):
             self.cb_tts_voice.setEnabled(checked)
         self.save_settings()
+        self.settings_changed.emit(self.settings)
 
     def _on_tts_voice_selected(self, index: int):
         if hasattr(self, "cb_tts_voice"):
@@ -782,6 +776,7 @@ class MainWindow(QMainWindow):
             if voice_id:
                 self.settings["tts_voice"] = voice_id
                 self.save_settings()
+                self.settings_changed.emit(self.settings)
 
     def _on_test_tts_clicked(self):
         voice_id = self.cb_tts_voice.currentData() if hasattr(self, "cb_tts_voice") else ""
