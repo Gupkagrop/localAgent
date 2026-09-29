@@ -94,6 +94,6 @@ htmlcov/
 .gemini/
 .brain/
 scratch/
-repomix-output.txt
+repomix-output.*
 
 
