@@ -1,0 +1,21 @@
+{
+  "output": {
+    "filePath": "repomix-output.xml",
+    "style": "xml",
+    "parsableStyle": true,
+    "removeComments": false,
+    "removeEmptyLines": false
+  },
+  "ignore": {
+    "customPatterns": [
+      "tests/**",
+      "sounds/**",
+      "*.wav",
+      "*.mp3",
+      ".venv/**",
+      "__pycache__/**",
+      "*.py[cod]",
+      "repomix-output.*"
+    ]
+  }
+}
