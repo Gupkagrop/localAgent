@@ -36,10 +36,6 @@ class AppCoordinator(QObject):
     prompt_start_agent_signal = pyqtSignal()
     vu_meter_signal = pyqtSignal(float)
     log_signal = pyqtSignal(str)
-    pill_text_signal = pyqtSignal(str)
-    pill_executing_signal = pyqtSignal(str)
-    pill_error_signal = pyqtSignal(str)
-    pill_listening_signal = pyqtSignal()
     key_detected_signal = pyqtSignal(str, int)
     llm_download_progress_signal = pyqtSignal(int)
     llm_download_done_signal = pyqtSignal(bool)
@@ -47,8 +43,23 @@ class AppCoordinator(QObject):
     card_status_signal = pyqtSignal(str, str, str)
     check_all_done_signal = pyqtSignal(bool, str)
     tray_state_signal = pyqtSignal(str)
+
+    # Единая сигнальная шина состояний интерфейса (UI State Bus)
+    ui_state_signal = pyqtSignal(str, dict)
+
+    # Сигналы обратной совместимости
+    pill_text_signal = pyqtSignal(str)
+    pill_executing_signal = pyqtSignal(str)
+    pill_error_signal = pyqtSignal(str)
+    pill_listening_signal = pyqtSignal()
     screen_glow_start_signal = pyqtSignal(str)
     screen_glow_stop_signal = pyqtSignal()
+
+    def emit_ui_state(self, state: str, text: str = "", **kwargs) -> None:
+        """Единый диспетчер отправки событий в UI (Pill, ScreenGlow, Status)."""
+        payload = {"text": text}
+        payload.update(kwargs)
+        self.ui_state_signal.emit(state, payload)
 
     def __init__(self, is_minimized: bool = False):
         super().__init__()
@@ -158,16 +169,21 @@ class AppCoordinator(QObject):
         self.prompt_start_agent_signal.connect(self._show_start_agent_prompt)
         self.key_detected_signal.connect(self.window.update_key_test_indicator)
 
-        # Сигналы логов и UI
+        # Сигналы логов и VU-метра
         self.log_signal.connect(self.window.log)
         self.vu_meter_signal.connect(self.window.set_vu_level)
         self.vu_meter_signal.connect(self.pill.update_vu)
-        self.pill_text_signal.connect(self.pill.update_text)
-        self.pill_executing_signal.connect(self.pill.show_executing)
-        self.pill_error_signal.connect(self.pill.show_error)
-        self.pill_listening_signal.connect(self.pill.show_listening)
-        self.screen_glow_start_signal.connect(self.screen_glow.start_glow)
-        self.screen_glow_stop_signal.connect(self.screen_glow.stop_glow)
+
+        # Единая сигнальная шина интерфейса (UI State Bus)
+        self.ui_state_signal.connect(self._handle_ui_state)
+
+        # Мост обратной совместимости для устаревших сигналов
+        self.pill_text_signal.connect(lambda t: self.emit_ui_state("text", t))
+        self.pill_executing_signal.connect(lambda t: self.emit_ui_state("executing", t))
+        self.pill_error_signal.connect(lambda t: self.emit_ui_state("error", t))
+        self.pill_listening_signal.connect(lambda: self.emit_ui_state("listening"))
+        self.screen_glow_start_signal.connect(lambda t: self.emit_ui_state("glow_start", t))
+        self.screen_glow_stop_signal.connect(lambda: self.emit_ui_state("glow_stop"))
 
         # Сигналы окон и трея
         self.window.agent_toggle_requested.connect(self.toggle_agent)
@@ -202,6 +218,26 @@ class AppCoordinator(QObject):
         # Сигнал от Spotlight
         self.spotlight.command_submitted.connect(self._handle_text_command)
 
+    def _handle_ui_state(self, state: str, payload: dict) -> None:
+        """Централизованный обработчик единой шины состояний пользовательского интерфейса."""
+        text = payload.get("text", "")
+        if state == "listening":
+            self.pill.show_listening()
+        elif state == "text":
+            self.pill.update_text(text)
+        elif state == "step":
+            step = int(payload.get("step", 1))
+            max_steps = int(payload.get("max_steps", 8))
+            self.pill.show_step(step, max_steps, text)
+        elif state == "executing":
+            self.pill.show_executing(text or "Выполняю...")
+        elif state == "error":
+            self.pill.show_error(text or "Ошибка")
+        elif state == "glow_start":
+            self.screen_glow.start_glow(text=text or "JARVIS • АНАЛИЗ И УПРАВЛЕНИЕ ЭКРАНОМ")
+        elif state == "glow_stop":
+            self.screen_glow.stop_glow()
+
     def _show_confirmation_dialog(self, command: dict, text: str):
         """Безопасный диалог подтверждения опасных системных действий в главном GUI потоке."""
         action_name = "выключение" if command.get("target") == "shutdown" else "перезагрузку"
@@ -218,17 +254,17 @@ class AppCoordinator(QObject):
             def run_async():
                 success, msg = self.executor.execute(command)
                 if success:
-                    self.pill_executing_signal.emit(msg)
+                    self.emit_ui_state("executing", msg)
                     self._play_sound("success")
                     if self.window.settings.get("tts_enabled", False):
                         self.tts.speak(msg)
                 else:
-                    self.pill_error_signal.emit("Ошибка")
+                    self.emit_ui_state("error", "Ошибка")
 
             threading.Thread(target=run_async, daemon=True).start()
         else:
             self.log("Опасное системное действие отменено пользователем.")
-            self.pill_error_signal.emit("Отменено")
+            self.emit_ui_state("error", "Отменено")
 
     def log(self, message: str):
         self.log_signal.emit(message)
@@ -434,10 +470,10 @@ class AppCoordinator(QObject):
         self.window.reset_check_all_systems_button()
         if success:
             self._play_sound("success")
-            self.pill_executing_signal.emit("Все системы OK")
+            self.emit_ui_state("executing", "Все системы OK")
         else:
             self._play_sound("error")
-            self.pill_error_signal.emit("Ошибка систем")
+            self.emit_ui_state("error", "Ошибка систем")
 
     def _run_check_all_systems(self):
         """Выполняет комплексную проверку всех подсистем ассистента."""
@@ -640,26 +676,26 @@ class AppCoordinator(QObject):
                 if msg:
                     self.log(f"🤖 [Vision] {msg}")
             elif ev_type == "task_started":
-                self.pill.show_step(1, max_steps, "Анализирую экран...")
-                self.screen_glow_start_signal.emit("JARVIS • АНАЛИЗ И УПРАВЛЕНИЕ ЭКРАНОМ")
+                self.emit_ui_state("step", "Анализирую экран...", step=1, max_steps=max_steps)
+                self.emit_ui_state("glow_start", "JARVIS • АНАЛИЗ И УПРАВЛЕНИЕ ЭКРАНОМ")
                 self.log(f"Vision-агент начал выполнение: «{ev.get('prompt', '')}»")
             elif ev_type == "step_status":
                 step = ev.get("step", 1)
                 status = ev.get("status", "")
-                self.pill.show_step(step, max_steps, status)
+                self.emit_ui_state("step", status, step=step, max_steps=max_steps)
             elif ev_type == "action_decided":
                 step = ev.get("step", 1)
                 thought = ev.get("thought", "")
                 action_name = ev.get("action", "")
                 msg = thought or f"Действие: {action_name}"
-                self.pill.show_step(step, max_steps, msg)
+                self.emit_ui_state("step", msg, step=step, max_steps=max_steps)
                 self.log(f"  [Шаг {step}] {msg}")
             elif ev_type == "click_performed":
                 x = ev.get("x", 0)
                 y = ev.get("y", 0)
                 self.click_overlay.show_click(x, y)
             elif ev_type == "confirmation_requested":
-                self.screen_glow_stop_signal.emit()
+                self.emit_ui_state("glow_stop")
                 msg_text = ev.get("message", "Действие требует подтверждения.")
                 self.log(f"⚠ Vision-агент запросил подтверждение: {msg_text}")
                 msg_box = QMessageBox(self.window)
@@ -673,36 +709,36 @@ class AppCoordinator(QObject):
                 msg_box.exec()
                 if msg_box.clickedButton() != btn_allow:
                     self.vision_manager.abort_task()
-                    self.pill.show_error("Отменено")
+                    self.emit_ui_state("error", "Отменено")
                     self.log("Действие Vision-агента отменено пользователем.")
                 else:
-                    self.screen_glow_start_signal.emit("JARVIS • АНАЛИЗ И УПРАВЛЕНИЕ ЭКРАНОМ")
+                    self.emit_ui_state("glow_start", "JARVIS • АНАЛИЗ И УПРАВЛЕНИЕ ЭКРАНОМ")
                     self.log("Действие Vision-агента разрешено пользователем.")
             elif ev_type == "interrupted":
-                self.screen_glow_stop_signal.emit()
+                self.emit_ui_state("glow_stop")
                 reason = ev.get("reason", "Прервано пользователем")
-                self.pill.show_error(reason)
+                self.emit_ui_state("error", reason)
                 self.log(f"⚠ Vision-агент прерван: {reason}")
                 self._play_sound("error")
             elif ev_type == "task_completed":
-                self.screen_glow_stop_signal.emit()
+                self.emit_ui_state("glow_stop")
                 success = ev.get("success", False)
                 message = ev.get("message", "Готово")
                 if success:
-                    self.pill.show_executing(message)
+                    self.emit_ui_state("executing", message)
                     self.log(f"✓ Задача успешно выполнена: {message}")
                     self._play_sound("success")
                     if self.window.settings.get("tts_enabled", False):
                         self.tts.speak(message)
                 else:
-                    self.pill.show_error(message)
+                    self.emit_ui_state("error", message)
                     self.log(f"⚠ Задача не завершена: {message}")
                     self._play_sound("error")
             elif ev_type == "error":
-                self.screen_glow_stop_signal.emit()
+                self.emit_ui_state("glow_stop")
                 self.window.set_llm_status("error")
                 err = ev.get("message", "Ошибка агента")
-                self.pill.show_error("Ошибка агента")
+                self.emit_ui_state("error", "Ошибка агента")
                 self.log(f"❌ Ошибка Vision-агента: {err}")
                 self._play_sound("error")
 
@@ -714,7 +750,7 @@ class AppCoordinator(QObject):
 
         if not enable:
             # Выгружаем модели из VRAM и останавливаем фоновый микрофон
-            self.screen_glow_stop_signal.emit()
+            self.emit_ui_state("glow_stop")
             self.listener.stop_wake_word_loop()
             self.stt.unload_model()
             self.decision_engine.unload_model()
@@ -742,7 +778,7 @@ class AppCoordinator(QObject):
                     # 1. Сигнал и пилюля
                     self.tray_state_signal.emit("listening")
                     self._play_sound("activate")
-                    self.pill_listening_signal.emit()
+                    self.emit_ui_state("listening")
 
                     # 2. Audio Ducking
                     if self.window.settings.get("audio_ducking_enabled", True):
@@ -757,25 +793,25 @@ class AppCoordinator(QObject):
                         self.audio_ducker.unduck()
 
                     if len(audio) == 0:
-                        self.pill_error_signal.emit("Звук не обнаружен")
+                        self.emit_ui_state("error", "Звук не обнаружен")
                         self._play_sound("error")
                         return
 
                     # 4. Распознавание речи (Faster-Whisper CUDA)
-                    self.pill_text_signal.emit("Распознаю...")
+                    self.emit_ui_state("text", "Распознаю...")
                     text = self.stt.transcribe(audio)
 
                     if not text:
-                        self.pill_error_signal.emit("Не удалось распознать")
+                        self.emit_ui_state("error", "Не удалось распознать")
                         self._play_sound("error")
                         self.log("Речь не распознана или была слишком тихой.")
                         return
 
-                self.pill_text_signal.emit(text)
+                self.emit_ui_state("text", text)
                 self.log(f"Голос: «{text}»")
 
                 # 5. Роутинг и исполнение
-                self.pill_executing_signal.emit("Выполняю...")
+                self.emit_ui_state("executing", "Выполняю...")
                 command = self.decision_engine.parse_command(text)
                 is_vision = command.get("action") == "vision_agent"
                 success, msg = self.executor.execute(command)
@@ -783,34 +819,34 @@ class AppCoordinator(QObject):
                 if is_vision:
                     # Для асинхронного Vision-агента ход выполнения отслеживается таймером _poll_vision_agent
                     if success:
-                        self.pill_executing_signal.emit(msg or "Анализирую экран...")
+                        self.emit_ui_state("executing", msg or "Анализирую экран...")
                     else:
                         self._play_sound("error")
-                        self.pill_error_signal.emit(msg)
+                        self.emit_ui_state("error", msg)
                 elif msg == "CONFIRM_REQUIRED":
                     if self.window.settings.get("confirm_dangerous_actions", True):
-                        self.pill_executing_signal.emit("Требуется подтверждение...")
+                        self.emit_ui_state("executing", "Требуется подтверждение...")
                         self.confirm_action_signal.emit(command, text)
                     else:
                         command.setdefault("parameters", {})["confirmed"] = True
                         succ, m = self.executor.execute(command)
                         if succ:
                             self._play_sound("success")
-                            self.pill_executing_signal.emit(m)
+                            self.emit_ui_state("executing", m)
                             if self.window.settings.get("tts_enabled", False):
                                 self.tts.speak(m)
                 elif success:
                     self._play_sound("success")
-                    self.pill_executing_signal.emit(msg)
+                    self.emit_ui_state("executing", msg)
                     if self.window.settings.get("tts_enabled", False):
                         self.tts.speak(msg)
                 else:
                     self._play_sound("error")
-                    self.pill_error_signal.emit(msg)
+                    self.emit_ui_state("error", msg)
 
             except Exception as e:
                 self.log(f"Ошибка голосового ввода: {e}")
-                self.pill_error_signal.emit("Ошибка выполнения")
+                self.emit_ui_state("error", "Ошибка выполнения")
                 self._play_sound("error")
             finally:
                 if self.window.settings.get("audio_ducking_enabled", True):
@@ -834,10 +870,10 @@ class AppCoordinator(QObject):
 
                 if is_vision:
                     if success:
-                        self.pill_executing_signal.emit(msg or "Анализирую экран...")
+                        self.emit_ui_state("executing", msg or "Анализирую экран...")
                     else:
                         self._play_sound("error")
-                        self.pill_error_signal.emit(msg)
+                        self.emit_ui_state("error", msg)
                     return
 
                 if msg == "CONFIRM_REQUIRED":
@@ -859,7 +895,7 @@ class AppCoordinator(QObject):
             except Exception as e:
                 self.log(f"Ошибка выполнения Spotlight-команды: {e}")
                 self._play_sound("error")
-                self.pill_error_signal.emit("Ошибка выполнения")
+                self.emit_ui_state("error", "Ошибка выполнения")
 
         threading.Thread(target=worker, daemon=True).start()
 

@@ -1,12 +1,12 @@
 """
 Контурная неоновая подсветка экрана (Screen Contour Glow Overlay).
-Отображает стильную анимированную рамку по периметру экрана в стиле HUD Jarvis
+Отображает стильную рамку по периметру экрана в стиле HUD Jarvis
 во время работы автономного Vision-агента или выполнения сложных задач.
-Полностью прозрачна для кликов мыши (WS_EX_TRANSPARENT).
+Полностью прозрачна для кликов мыши (WS_EX_TRANSPARENT) и работает в статическом
+энергоэффективном режиме с нулевой нагрузкой на Windows DWM (0% CPU / GPU).
 """
-import math
 from typing import Optional
-from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF
+from PyQt6.QtCore import Qt, QRectF, QPointF
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import (
     QColor, QPainter, QPen, QBrush, QLinearGradient,
@@ -23,8 +23,8 @@ except ImportError:
 
 class ScreenGlowOverlay(QWidget):
     """
-    Полноэкранный полупрозрачный оверлей с пульсирующим неоновым контуром.
-    Не перехватывает клики мыши и не забирает системный фокус.
+    Полноэкранный полупрозрачный оверлей со статичным неоновым контуром.
+    Не перехватывает клики мыши, не забирает фокус и не производит лишних перерисовок.
     """
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
@@ -41,15 +41,9 @@ class ScreenGlowOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
 
-        self._phase = 0.0
         self._glow_color = QColor(0, 240, 255)  # Неоновый циан Jarvis
-        self._secondary_color = QColor(139, 92, 246)  # Фиолетовый акцент
         self._status_text = "JARVIS • VISION AGENT ACTIVE"
-
-        # Таймер плавной анимации дыхания (30 FPS)
-        self._anim_timer = QTimer(self)
-        self._anim_timer.setInterval(33)
-        self._anim_timer.timeout.connect(self._on_anim_frame)
+        self._is_active = False
 
         self._setup_win32_passthrough()
 
@@ -78,66 +72,57 @@ class ScreenGlowOverlay(QWidget):
             geom = screen.geometry()
             self.setGeometry(geom)
 
-    def _on_anim_frame(self) -> None:
-        """Шаг фазы анимации дыхания."""
-        self._phase += 0.07
-        if self._phase > 2 * math.pi:
-            self._phase -= 2 * math.pi
-        self.update()
+    def is_active(self) -> bool:
+        """Возвращает статус активности оверлея."""
+        return self._is_active
 
     def start_glow(self, text: str = "JARVIS • VISION AGENT ACTIVE", color: Optional[QColor] = None) -> None:
-        """Запускает отображение и анимацию неонового контура."""
+        """Запускает отображение статического неонового контура (0% CPU оверхеда)."""
         if color:
             self._glow_color = color
         self._status_text = text
+        self._is_active = True
         self._reposition_to_active_screen()
         self._setup_win32_passthrough()
+        self.update()
         self.show()
         self.raise_()
-        if not self._anim_timer.isActive():
-            self._anim_timer.start()
 
     def stop_glow(self) -> None:
-        """Останавливает анимацию и скрывает оверлей."""
-        self._anim_timer.stop()
+        """Скрывает оверлей."""
+        self._is_active = False
         self.hide()
 
     def paintEvent(self, event) -> None:
-        """Отрисовка пульсирующего неонового контура, угловых скобок HUD и статус-бейджа."""
+        """Отрисовка четкого неонового контура, угловых скобок HUD и статус-бейджа."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         w = float(self.width())
         h = float(self.height())
 
-        # Коэффициент пульсации дыхания (от 0.6 до 1.0)
-        pulse = 0.80 + 0.20 * math.sin(self._phase)
-        base_alpha = int(220 * pulse)
-        halo_alpha = int(70 * pulse)
+        base_alpha = 230
+        halo_alpha = 75
 
         glow_rgb = (self._glow_color.red(), self._glow_color.green(), self._glow_color.blue())
         halo_depth = 28.0
 
         # 1. Внутренний мягкий ореол (Glow Halo) по 4 сторонам
-        # Верхний ореол
         top_grad = QLinearGradient(0, 0, 0, halo_depth)
         top_grad.setColorAt(0.0, QColor(*glow_rgb, halo_alpha))
         top_grad.setColorAt(1.0, QColor(*glow_rgb, 0))
         painter.fillRect(QRectF(0, 0, w, halo_depth), top_grad)
 
-        # Нижний ореол
         bottom_grad = QLinearGradient(0, h, 0, h - halo_depth)
         bottom_grad.setColorAt(0.0, QColor(*glow_rgb, halo_alpha))
         bottom_grad.setColorAt(1.0, QColor(*glow_rgb, 0))
         painter.fillRect(QRectF(0, h - halo_depth, w, halo_depth), bottom_grad)
 
-        # Левый ореол
         left_grad = QLinearGradient(0, 0, halo_depth, 0)
         left_grad.setColorAt(0.0, QColor(*glow_rgb, halo_alpha))
         left_grad.setColorAt(1.0, QColor(*glow_rgb, 0))
         painter.fillRect(QRectF(0, 0, halo_depth, h), left_grad)
 
-        # Правый ореол
         right_grad = QLinearGradient(w, 0, w - halo_depth, 0)
         right_grad.setColorAt(0.0, QColor(*glow_rgb, halo_alpha))
         right_grad.setColorAt(1.0, QColor(*glow_rgb, 0))
@@ -152,7 +137,7 @@ class ScreenGlowOverlay(QWidget):
 
         # 3. Футуристичные угловые скобки HUD (Cyber Brackets)
         bracket_len = 36.0
-        bracket_pen = QPen(QColor(255, 255, 255, int(240 * pulse)))
+        bracket_pen = QPen(QColor(255, 255, 255, 240))
         bracket_pen.setWidthF(4.0)
         painter.setPen(bracket_pen)
 
@@ -178,12 +163,12 @@ class ScreenGlowOverlay(QWidget):
         badge_x = (w - badge_w) / 2.0
         badge_y = 6.0
 
-        painter.setPen(QPen(QColor(*glow_rgb, int(180 * pulse)), 1.5))
-        painter.setBrush(QBrush(QColor(15, 23, 42, int(220 * pulse))))
+        painter.setPen(QPen(QColor(*glow_rgb, 180), 1.5))
+        painter.setBrush(QBrush(QColor(15, 23, 42, 220)))
         painter.drawRoundedRect(QRectF(badge_x, badge_y, badge_w, badge_h), 6.0, 6.0)
 
         # Текст внутри бейджа
-        painter.setPen(QColor(255, 255, 255, int(240 * pulse)))
+        painter.setPen(QColor(255, 255, 255, 240))
         font = QFont("Segoe UI", 9, QFont.Weight.DemiBold)
         font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.5)
         painter.setFont(font)

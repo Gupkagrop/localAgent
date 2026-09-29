@@ -704,25 +704,46 @@ class TestVisualFeedbackAndScreenGlow(unittest.TestCase):
         self.assertEqual(pill.wave._mode, "error")
 
     def test_screen_glow_overlay(self):
-        """Проверка полноэкранного оверлея контурной подсветки экрана ScreenGlowOverlay."""
+        """Проверка полноэкранного оверлея контурной подсветки экрана ScreenGlowOverlay в статическом режиме."""
         from gui.screen_glow import ScreenGlowOverlay
         glow = ScreenGlowOverlay()
-        self.assertFalse(glow._anim_timer.isActive())
+        self.assertFalse(glow.is_active())
 
-        # Запуск неоновой подсветки
+        # Запуск статической неоновой подсветки (0% оверхеда DWM)
         glow.start_glow(text="JARVIS • АКТИВЕН")
-        self.assertTrue(glow._anim_timer.isActive())
+        self.assertTrue(glow.is_active())
         self.assertEqual(glow._status_text, "JARVIS • АКТИВЕН")
-
-        # Проверка шага анимации дыхания
-        init_phase = glow._phase
-        glow._on_anim_frame()
-        self.assertGreater(glow._phase, init_phase)
 
         # Остановка подсветки
         glow.stop_glow()
-        self.assertFalse(glow._anim_timer.isActive())
+        self.assertFalse(glow.is_active())
         self.assertFalse(glow.isVisible())
+
+    def test_app_coordinator_ui_state_bus(self):
+        """Проверка работы единой шины состояний AppCoordinator.emit_ui_state."""
+        from main import AppCoordinator
+        from unittest.mock import patch, MagicMock
+        with patch("main.MainWindow"), patch("main.AudioListener"), patch("main.CopilotKeyHook"), patch("main.VisionAgentProcessManager"):
+            coord = AppCoordinator(is_minimized=True)
+            # Тест перевода в режим listening
+            coord.emit_ui_state("listening")
+            self.assertEqual(coord.pill._mode, "listening")
+
+            # Тест передачи текста
+            coord.emit_ui_state("text", "Тестовая фраза")
+            self.assertEqual(coord.pill.label.text(), "Тестовая фраза")
+
+            # Тест выполнения
+            coord.emit_ui_state("executing", "Действие готово")
+            self.assertEqual(coord.pill._mode, "executing")
+
+            # Тест подсветки экрана
+            coord.emit_ui_state("glow_start", "ТЕСТ ПОДСВЕТКИ")
+            self.assertTrue(coord.screen_glow.is_active())
+            self.assertEqual(coord.screen_glow._status_text, "ТЕСТ ПОДСВЕТКИ")
+
+            coord.emit_ui_state("glow_stop")
+            self.assertFalse(coord.screen_glow.is_active())
 
 
 if __name__ == "__main__":
