@@ -41,8 +41,11 @@ class AudioDucker:
             try:
                 current_vol = endpoint.GetMasterVolumeLevelScalar()
                 self._previous_volume = current_vol
-                # Понижаем громкость до доли от текущей (минимум 5%)
-                target_vol = max(0.05, current_vol * duck_factor)
+                # Понижаем громкость до доли от текущей (если звук был выключен — оставляем 0, иначе минимум 5%)
+                if current_vol <= 0.001:
+                    target_vol = 0.0
+                else:
+                    target_vol = max(0.05, current_vol * duck_factor)
                 endpoint.SetMasterVolumeLevelScalar(target_vol, None)
                 self._is_ducked = True
             except Exception:

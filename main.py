@@ -80,6 +80,7 @@ class AppCoordinator(QObject):
         self.stt = SpeechToText(model_size=stt_model, device="cuda")
         self.tts = TextToSpeech(voice_name=tts_voice, speed=sapi_speed)
         self.listener = AudioListener(device_index=saved_device, on_vu_meter=self.vu_meter_signal.emit)
+        self.listener.wake_word_enabled = bool(self.window.settings.get("wake_word_enabled", True))
 
         self.is_agent_running = True
         self._is_processing_voice = False
@@ -260,6 +261,7 @@ class AppCoordinator(QObject):
 
     def _on_settings_updated(self, settings: dict):
         self.executor.settings = settings
+        self.listener.wake_word_enabled = bool(settings.get("wake_word_enabled", True))
         tts_voice = settings.get("tts_voice", "ru_RU-irina-medium")
         tts_speed = float(settings.get("tts_speed", 1.0))
         sapi_speed = int(max(-10, min(10, (tts_speed - 1.0) * 10)))
@@ -808,36 +810,40 @@ class AppCoordinator(QObject):
         threading.Thread(target=worker, daemon=True).start()
 
     def _handle_text_command(self, text: str):
-        """Исполнение команды, введенной текстом через Spotlight."""
+        """Исполнение команды, введенной текстом через Spotlight в неблокирующем потоке."""
         self.log(f"Spotlight: «{text}»")
-        command = self.decision_engine.parse_command(text)
-        is_vision = command.get("action") == "vision_agent"
-        success, msg = self.executor.execute(command)
 
-        if is_vision:
-            if success:
-                self.pill_executing_signal.emit(msg or "Анализирую экран...")
+        def worker():
+            command = self.decision_engine.parse_command(text)
+            is_vision = command.get("action") == "vision_agent"
+            success, msg = self.executor.execute(command)
+
+            if is_vision:
+                if success:
+                    self.pill_executing_signal.emit(msg or "Анализирую экран...")
+                else:
+                    self._play_sound("error")
+                    self.pill_error_signal.emit(msg)
+                return
+
+            if msg == "CONFIRM_REQUIRED":
+                if self.window.settings.get("confirm_dangerous_actions", True):
+                    self.confirm_action_signal.emit(command, text)
+                else:
+                    command.setdefault("parameters", {})["confirmed"] = True
+                    succ, m = self.executor.execute(command)
+                    if succ:
+                        self._play_sound("success")
+                        if self.window.settings.get("tts_enabled", False):
+                            self.tts.speak(m)
+            elif success:
+                self._play_sound("success")
+                if self.window.settings.get("tts_enabled", False):
+                    self.tts.speak(msg)
             else:
                 self._play_sound("error")
-                self.pill_error_signal.emit(msg)
-            return
 
-        if msg == "CONFIRM_REQUIRED":
-            if self.window.settings.get("confirm_dangerous_actions", True):
-                self.confirm_action_signal.emit(command, text)
-            else:
-                command.setdefault("parameters", {})["confirmed"] = True
-                succ, m = self.executor.execute(command)
-                if succ:
-                    self._play_sound("success")
-                    if self.window.settings.get("tts_enabled", False):
-                        self.tts.speak(m)
-        elif success:
-            self._play_sound("success")
-            if self.window.settings.get("tts_enabled", False):
-                self.tts.speak(msg)
-        else:
-            self._play_sound("error")
+        threading.Thread(target=worker, daemon=True).start()
 
     def exit_app(self):
         """Полное закрытие приложения и освобождение системных ресурсов."""

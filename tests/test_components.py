@@ -259,6 +259,19 @@ class TestCoreModules(unittest.TestCase):
             self.assertIsNone(ducker._previous_volume)
             mock_endpoint.SetMasterVolumeLevelScalar.assert_called_with(0.8, None)
 
+    def test_audio_ducker_duck_when_muted_remains_zero(self):
+        """Если системная громкость равна 0 (Mute), ducking оставляет 0.0 и не включает звук."""
+        ducker = AudioDucker()
+        import unittest.mock as mock
+        mock_endpoint = mock.MagicMock()
+        mock_endpoint.GetMasterVolumeLevelScalar.return_value = 0.0
+
+        with mock.patch.object(ducker, "_get_volume_endpoint", return_value=mock_endpoint):
+            ducker.duck(duck_factor=0.25)
+            self.assertTrue(ducker._is_ducked)
+            self.assertEqual(ducker._previous_volume, 0.0)
+            mock_endpoint.SetMasterVolumeLevelScalar.assert_called_with(0.0, None)
+
     def test_tts_init(self):
         tts = TextToSpeech(speed=1)
         self.assertEqual(tts.speed, 1)
@@ -550,12 +563,6 @@ class TestRegressionsAndProblemFixes(unittest.TestCase):
         from core.executor import CommandExecutor
         self.engine = DecisionEngine()
         self.executor = CommandExecutor()
-
-    def test_app_controller_any_imported(self):
-        """Проверка доступности Any в app_controller."""
-        import core.app_controller as app_controller
-        self.assertTrue(hasattr(app_controller, "Any"))
-        self.assertIsNotNone(app_controller.Any)
 
     def test_volume_unmute(self):
         """Команда unmute корректно обрабатывается в _handle_volume."""

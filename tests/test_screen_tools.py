@@ -74,6 +74,45 @@ class TestScreenTools(unittest.TestCase):
         self.assertGreater(img.width, 0)
         self.assertGreater(img.height, 0)
 
+    def test_denormalize_negative_monitor_coordinates(self) -> None:
+        """Проверка корректной денормализации на дополнительном левом мониторе с отрицательными координатами."""
+        # Монитор слева от основного: left = -1920, top = 0, width = 1920, height = 1080
+        self.controller._current_monitor = (-1920, 0, 1920, 1080)
+        
+        # Левый верхний угол
+        x, y = self.controller.denormalize_coordinate(norm_x=0, norm_y=0)
+        self.assertEqual(x, -1920)
+        self.assertEqual(y, 0)
+
+        # Центр левого монитора
+        x, y = self.controller.denormalize_coordinate(norm_x=500, norm_y=500)
+        self.assertEqual(x, -960)
+        self.assertEqual(y, 540)
+
+        # Правый нижний угол левого монитора
+        x, y = self.controller.denormalize_coordinate(norm_x=1000, norm_y=1000)
+        self.assertEqual(x, -1)
+        self.assertEqual(y, 1079)
+
+    def test_type_text_short_uses_direct_input(self) -> None:
+        """Короткий текст (<= 20 символов) отправляется напрямую через _type_chars_direct."""
+        from unittest.mock import patch
+        with patch.object(self.controller, "_type_chars_direct") as mock_direct:
+            with patch.object(self.controller, "hotkey") as mock_hotkey:
+                self.controller.type_text("Привет, мир!", press_enter=False)
+                mock_direct.assert_called_once_with("Привет, мир!")
+                mock_hotkey.assert_not_called()
+
+    def test_type_text_long_uses_clipboard(self) -> None:
+        """Длинный текст (> 20 символов) передается через буфер обмена Windows и hotkey Ctrl+V."""
+        from unittest.mock import patch
+        long_text = "Этот текст точно длиннее двадцати символов для тестирования"
+        with patch.object(self.controller, "_type_chars_direct") as mock_direct:
+            with patch.object(self.controller, "hotkey") as mock_hotkey:
+                self.controller.type_text(long_text, press_enter=False)
+                mock_hotkey.assert_called_once_with(["ctrl", "v"])
+                mock_direct.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -437,6 +437,17 @@ def _worker_process_loop(
                         screen.send_key(action.key)
 
                     elif action.action_type == "hotkey" and action.keys:
+                        # Программные guardrails: предотвращение деструктивных шорткатов
+                        dangerous_combos = {("shift", "delete"), ("win", "r"), ("ctrl", "alt", "delete")}
+                        keys_lower = set(k.lower().strip() for k in action.keys)
+                        if any(all(k in keys_lower for k in combo) for combo in dangerous_combos):
+                            blocked_str = " + ".join(action.keys)
+                            status_queue.put({
+                                "type": "confirmation_requested",
+                                "message": f"Блокировка потенциально опасного сочетания клавиш: {blocked_str}"
+                            })
+                            final_message = f"Опасное действие отклонено: {blocked_str}"
+                            break
                         screen.hotkey(action.keys)
 
                     elif action.action_type == "scroll":
@@ -598,6 +609,14 @@ class VisionAgentProcessManager:
                 self._start_time = None
                 self._is_busy = False
                 self.stop()
+
+        # Детекция аварийного завершения процесса воркера (CUDA OOM / сбой драйвера)
+        if self._is_busy and not self.is_running():
+            self._is_busy = False
+            events.append({
+                "type": "error",
+                "message": "Фоновый процесс Vision-агента неожиданно завершился (сбой GPU или памяти)"
+            })
 
         return events
 

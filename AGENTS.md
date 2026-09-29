@@ -31,7 +31,7 @@ uv sync
 # Запуск основного приложения (PyQt6 GUI)
 .\.venv\Scripts\python.exe main.py
 
-# Запуск полного сьюта unit-тестов (92 теста, 100% PASS)
+# Запуск полного сьюта unit-тестов (107 тестов, 100% PASS)
 .\.venv\Scripts\python.exe -m unittest discover tests
 
 # Комплексная системная проверка всех 10 подсистем (10/10 OK)

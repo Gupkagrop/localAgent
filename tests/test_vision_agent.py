@@ -129,14 +129,33 @@ class TestFailSafeMonitor(unittest.TestCase):
         self.assertIsInstance(x, int)
         self.assertIsInstance(y, int)
 
-    def test_interrupt_detection_logic(self) -> None:
-        """Проверка расчета дистанции движения мыши."""
+    def test_interrupt_detection_esc_pressed(self) -> None:
+        """Нажатие клавиши ESC (0x1B) прерывает выполнение агента."""
         monitor = FailSafeMonitor()
-        x, y = monitor.get_cursor_position()
-        monitor.update_known_position(x, y)
-        interrupted, _ = monitor.is_interrupted()
-        # Если пользователь не дергает мышь и не жмет ESC во время теста
-        self.assertIsInstance(interrupted, bool)
+        with patch.object(monitor.user32, "GetAsyncKeyState", return_value=0x8000):
+            interrupted, reason = monitor.is_interrupted()
+            self.assertTrue(interrupted)
+            self.assertIn("ESC", reason)
+
+    def test_interrupt_detection_mouse_delta_exceeded(self) -> None:
+        """Физическое смещение мыши более чем на 40 px прерывает выполнение агента."""
+        monitor = FailSafeMonitor()
+        monitor.update_known_position(100, 100)
+        with patch.object(monitor.user32, "GetAsyncKeyState", return_value=0):
+            with patch.object(monitor, "get_cursor_position", return_value=(150, 100)):
+                interrupted, reason = monitor.is_interrupted()
+                self.assertTrue(interrupted)
+                self.assertIn("мыши", reason)
+
+    def test_interrupt_detection_mouse_delta_within_threshold(self) -> None:
+        """Незначительное смещение мыши (<= 40 px) не прерывает выполнение агента."""
+        monitor = FailSafeMonitor()
+        monitor.update_known_position(100, 100)
+        with patch.object(monitor.user32, "GetAsyncKeyState", return_value=0):
+            with patch.object(monitor, "get_cursor_position", return_value=(110, 100)):
+                interrupted, reason = monitor.is_interrupted()
+                self.assertFalse(interrupted)
+                self.assertEqual(reason, "")
 
 
 class TestProcessManager(unittest.TestCase):
@@ -181,6 +200,23 @@ class TestProcessManager(unittest.TestCase):
         mgr.stop()
         self.assertFalse(mgr.is_loading())
         self.assertFalse(mgr.is_running())
+
+    @patch("core.vision_agent.mp.Process")
+    def test_manager_detects_worker_crash(self, mock_process_cls) -> None:
+        """При краше процесса воркера во время занятости сбрасывается _is_busy и генерируется ошибка."""
+        mock_proc = MagicMock()
+        mock_proc.is_alive.return_value = False
+        mock_process_cls.return_value = mock_proc
+
+        mgr = VisionAgentProcessManager()
+        mgr._process = mock_proc
+        mgr._is_busy = True
+        mgr._status_queue = MagicMock()
+        mgr._status_queue.get_nowait.side_effect = Exception("Queue empty")
+
+        events = mgr.poll_status()
+        self.assertFalse(mgr.is_busy())
+        self.assertTrue(any(ev.get("type") == "error" and "неожиданно завершился" in ev.get("message", "") for ev in events))
 
 
 class TestMainWindowStatus(unittest.TestCase):

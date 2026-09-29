@@ -398,6 +398,14 @@ class CommandExecutor:
 
         if params and params.get("use_clipboard"):
             try:
+                # Очищаем буфер перед эмуляцией Ctrl+C, чтобы исключить случайную отправку старых секретов
+                try:
+                    win32clipboard.OpenClipboard()
+                    win32clipboard.EmptyClipboard()
+                    win32clipboard.CloseClipboard()
+                except Exception:
+                    pass
+
                 # Эмулируем Ctrl+C для копирования выделенного текста/ошибки
                 ctypes.windll.user32.keybd_event(VK_CONTROL, 0, 0, 0)
                 ctypes.windll.user32.keybd_event(VK_C, 0, 0, 0)

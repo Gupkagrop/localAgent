@@ -48,6 +48,7 @@ class AudioListener:
         self.silence_threshold_ms = 400
 
         # Буфер для фонового Wake Word
+        self.wake_word_enabled = True
         self._wake_buffer: list[np.ndarray] = []
         self._wake_pre_buffer: list[np.ndarray] = []
         self._wake_speech_active = False
@@ -155,6 +156,9 @@ class AudioListener:
 
     def _process_wake_word(self, chunk: np.ndarray, rms: float):
         """Отслеживает ключевое слово («Джарвис») без блокировки аудиопотока."""
+        if not self.wake_word_enabled:
+            return
+
         now = time.time()
         is_speech = rms > self.speech_energy_threshold
 
@@ -180,8 +184,8 @@ class AudioListener:
                 if self._wake_silence_start is None:
                     self._wake_silence_start = now
                 elif (now - self._wake_silence_start) * 1000 > 320:
-                    # Фраза завершилась - запускаем проверку слова-триггера
-                    if len(self._wake_buffer) >= int(SAMPLE_RATE * 0.25 / CHUNK_SIZE):
+                    # Фраза завершилась - запускаем проверку слова-триггера (минимум 0.50 с речи для отсечения бытовых щелчков и шума)
+                    if len(self._wake_buffer) >= int(SAMPLE_RATE * 0.50 / CHUNK_SIZE):
                         audio_candidate = np.concatenate(self._wake_buffer)
                         self._wake_buffer = []
                         self._wake_speech_active = False
