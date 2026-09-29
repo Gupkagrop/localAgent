@@ -118,6 +118,24 @@ class TestVisionAgentParser(unittest.TestCase):
         act_done = ActionParser.parse('{"thought": "Завершение", "action": "done", "message": "задача выполнена"}')
         self.assertEqual(act_done.action_type, "finish")
 
+    def test_dangerous_hotkeys_detected(self) -> None:
+        """Программные guardrails: выявление опасных системных шорткатов и их синонимов."""
+        self.assertTrue(ActionParser.is_dangerous_hotkey(["shift", "delete"]))
+        self.assertTrue(ActionParser.is_dangerous_hotkey(["win", "r"]))
+        self.assertTrue(ActionParser.is_dangerous_hotkey(["ctrl", "alt", "delete"]))
+        # Проверка алиасов клавиш
+        self.assertTrue(ActionParser.is_dangerous_hotkey(["windows", "r"]))
+        self.assertTrue(ActionParser.is_dangerous_hotkey(["control", "alt", "delete"]))
+        self.assertTrue(ActionParser.is_dangerous_hotkey(["shift", "del"]))
+
+    def test_safe_hotkeys_allowed(self) -> None:
+        """Безопасные шорткаты не блокируются guardrails."""
+        self.assertFalse(ActionParser.is_dangerous_hotkey(["ctrl", "c"]))
+        self.assertFalse(ActionParser.is_dangerous_hotkey(["ctrl", "v"]))
+        self.assertFalse(ActionParser.is_dangerous_hotkey(["ctrl", "t"]))
+        self.assertFalse(ActionParser.is_dangerous_hotkey(["alt", "tab"]))
+        self.assertFalse(ActionParser.is_dangerous_hotkey([]))
+
 
 class TestFailSafeMonitor(unittest.TestCase):
     """Тестирование экстренного прерывания действий."""

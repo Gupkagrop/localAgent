@@ -401,8 +401,10 @@ class CommandExecutor:
                 # Очищаем буфер перед эмуляцией Ctrl+C, чтобы исключить случайную отправку старых секретов
                 try:
                     win32clipboard.OpenClipboard()
-                    win32clipboard.EmptyClipboard()
-                    win32clipboard.CloseClipboard()
+                    try:
+                        win32clipboard.EmptyClipboard()
+                    finally:
+                        win32clipboard.CloseClipboard()
                 except Exception:
                     pass
 
@@ -414,11 +416,16 @@ class CommandExecutor:
                 ctypes.windll.user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
                 time.sleep(0.1)
 
-                win32clipboard.OpenClipboard()
                 clip_text = ""
-                if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
-                    clip_text = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
-                win32clipboard.CloseClipboard()
+                try:
+                    win32clipboard.OpenClipboard()
+                    try:
+                        if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
+                            clip_text = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+                    finally:
+                        win32clipboard.CloseClipboard()
+                except Exception:
+                    clip_text = ""
 
                 if clip_text and clip_text.strip():
                     prompt = f"{prompt}\n\n{clip_text.strip()}"

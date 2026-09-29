@@ -154,6 +154,16 @@ class ActionParser:
             raw_response=response_text
         )
 
+    @staticmethod
+    def is_dangerous_hotkey(keys: List[str]) -> bool:
+        """Проверяет сочетание клавиш на наличие в черном списке деструктивных команд Windows."""
+        if not keys:
+            return False
+        dangerous_combos = {("shift", "delete"), ("win", "r"), ("ctrl", "alt", "delete")}
+        alias_map = {"windows": "win", "control": "ctrl", "del": "delete"}
+        keys_normalized = set(alias_map.get(k.lower().strip(), k.lower().strip()) for k in keys)
+        return any(all(k in keys_normalized for k in combo) for combo in dangerous_combos)
+
 
 class FailSafeMonitor:
     """Контроллер экстренной остановки агента при вмешательстве пользователя."""
@@ -438,9 +448,7 @@ def _worker_process_loop(
 
                     elif action.action_type == "hotkey" and action.keys:
                         # Программные guardrails: предотвращение деструктивных шорткатов
-                        dangerous_combos = {("shift", "delete"), ("win", "r"), ("ctrl", "alt", "delete")}
-                        keys_lower = set(k.lower().strip() for k in action.keys)
-                        if any(all(k in keys_lower for k in combo) for combo in dangerous_combos):
+                        if ActionParser.is_dangerous_hotkey(action.keys):
                             blocked_str = " + ".join(action.keys)
                             status_queue.put({
                                 "type": "confirmation_requested",

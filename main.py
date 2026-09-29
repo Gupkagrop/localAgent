@@ -814,34 +814,39 @@ class AppCoordinator(QObject):
         self.log(f"Spotlight: «{text}»")
 
         def worker():
-            command = self.decision_engine.parse_command(text)
-            is_vision = command.get("action") == "vision_agent"
-            success, msg = self.executor.execute(command)
+            try:
+                command = self.decision_engine.parse_command(text)
+                is_vision = command.get("action") == "vision_agent"
+                success, msg = self.executor.execute(command)
 
-            if is_vision:
-                if success:
-                    self.pill_executing_signal.emit(msg or "Анализирую экран...")
+                if is_vision:
+                    if success:
+                        self.pill_executing_signal.emit(msg or "Анализирую экран...")
+                    else:
+                        self._play_sound("error")
+                        self.pill_error_signal.emit(msg)
+                    return
+
+                if msg == "CONFIRM_REQUIRED":
+                    if self.window.settings.get("confirm_dangerous_actions", True):
+                        self.confirm_action_signal.emit(command, text)
+                    else:
+                        command.setdefault("parameters", {})["confirmed"] = True
+                        succ, m = self.executor.execute(command)
+                        if succ:
+                            self._play_sound("success")
+                            if self.window.settings.get("tts_enabled", False):
+                                self.tts.speak(m)
+                elif success:
+                    self._play_sound("success")
+                    if self.window.settings.get("tts_enabled", False):
+                        self.tts.speak(msg)
                 else:
                     self._play_sound("error")
-                    self.pill_error_signal.emit(msg)
-                return
-
-            if msg == "CONFIRM_REQUIRED":
-                if self.window.settings.get("confirm_dangerous_actions", True):
-                    self.confirm_action_signal.emit(command, text)
-                else:
-                    command.setdefault("parameters", {})["confirmed"] = True
-                    succ, m = self.executor.execute(command)
-                    if succ:
-                        self._play_sound("success")
-                        if self.window.settings.get("tts_enabled", False):
-                            self.tts.speak(m)
-            elif success:
-                self._play_sound("success")
-                if self.window.settings.get("tts_enabled", False):
-                    self.tts.speak(msg)
-            else:
+            except Exception as e:
+                self.log(f"Ошибка выполнения Spotlight-команды: {e}")
                 self._play_sound("error")
+                self.pill_error_signal.emit("Ошибка выполнения")
 
         threading.Thread(target=worker, daemon=True).start()
 
