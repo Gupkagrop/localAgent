@@ -113,6 +113,49 @@ class TestScreenTools(unittest.TestCase):
                 mock_hotkey.assert_called_once_with(["ctrl", "v"])
                 mock_direct.assert_not_called()
 
+    def test_denormalize_coordinate_with_image_size(self) -> None:
+        """Проверка точного пиксельного масштабирования из размера изображения модели в разрешение монитора."""
+        # Монитор 1920x1200, изображение модели 1260x784
+        self.controller._current_monitor = (0, 0, 1920, 1200)
+
+        # Координата иконки Obsidian от Jedi-3B: (36, 278) -> физический пиксель экрана (55, 426)
+        x, y = self.controller.denormalize_coordinate(36, 278, image_size=(1260, 784))
+        self.assertEqual(x, 55)
+        self.assertEqual(y, 426)
+
+        # Углы и центр
+        x_0, y_0 = self.controller.denormalize_coordinate(0, 0, image_size=(1260, 784))
+        self.assertEqual((x_0, y_0), (0, 0))
+
+        x_br, y_br = self.controller.denormalize_coordinate(1260, 784, image_size=(1260, 784))
+        self.assertEqual(x_br, 1919)
+        self.assertEqual(y_br, 1199)
+
+    def test_denormalize_coordinate_multi_monitor_with_image_size(self) -> None:
+        """Проверка масштабирования координат с image_size на мультимониторе со смещением."""
+        # Монитор слева от основного: left = -1920, top = 0, width = 1920, height = 1080
+        self.controller._current_monitor = (-1920, 0, 1920, 1080)
+
+        # Центр кадра (640, 360) при входном размере (1280, 720) -> центр экрана (-960, 540)
+        x, y = self.controller.denormalize_coordinate(640, 360, image_size=(1280, 720))
+        self.assertEqual(x, -960)
+        self.assertEqual(y, 540)
+
+    def test_app_controller_resolve_executable_or_shortcut(self) -> None:
+        """Проверка умного поиска исполняемых файлов и ярлыков Windows."""
+        from core.app_controller import DesktopAppController
+
+        # 1. Системные утилиты из PATH
+        resolved_notepad = DesktopAppController.resolve_executable_or_shortcut("notepad.exe", "блокнот")
+        self.assertTrue(resolved_notepad.lower().endswith("notepad.exe"))
+
+        # 2. Приложения в Program Files / Desktop (Obsidian)
+        resolved_obsidian = DesktopAppController.resolve_executable_or_shortcut("obsidian.exe", "obsidian")
+        self.assertTrue(
+            resolved_obsidian.lower().endswith(".exe") or resolved_obsidian.lower().endswith(".lnk"),
+            f"Неожиданный путь Obsidian: {resolved_obsidian}"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

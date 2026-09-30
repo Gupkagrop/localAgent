@@ -347,15 +347,30 @@ class ScreenController:
         # 3. Заглушка при сбое всех методов захвата
         return Image.new("RGB", (self.screen_width, self.screen_height), color=(30, 30, 30))
 
-    def denormalize_coordinate(self, norm_x: int, norm_y: int) -> tuple[int, int]:
+    def denormalize_coordinate(
+        self, norm_x: int, norm_y: int, image_size: tuple[int, int] | None = None
+    ) -> tuple[int, int]:
         """
-        Преобразует нормализованные координаты Qwen (0..1000) в реальные экранные пиксели.
+        Преобразует координаты модели в реальные физические координаты экрана Windows.
+        Если передан image_size=(img_w, img_h), масштабирует пиксельные координаты модели
+        из разрешения входного изображения в физическое разрешение целевого монитора.
+        В случае относительных координат (0..1000) денормализует как процент от размера экрана.
         Учитывает физическое смещение активного монитора (left, top) в мультимониторных конфигурациях.
         """
+        left, top, width, height = self._current_monitor
+
+        # Если передано разрешение изображения, которое видела модель
+        if image_size and image_size[0] > 0 and image_size[1] > 0:
+            img_w, img_h = image_size
+            if norm_x <= img_w + 50 and norm_y <= img_h + 50:
+                scale_x = width / float(img_w)
+                scale_y = height / float(img_h)
+                screen_x = left + max(0, min(width - 1, int(round(norm_x * scale_x))))
+                screen_y = top + max(0, min(height - 1, int(round(norm_y * scale_y))))
+                return screen_x, screen_y
+
         safe_x = max(0, min(1000, norm_x))
         safe_y = max(0, min(1000, norm_y))
-
-        left, top, width, height = self._current_monitor
         screen_x = left + max(0, min(width - 1, int((safe_x / 1000.0) * width)))
         screen_y = top + max(0, min(height - 1, int((safe_y / 1000.0) * height)))
         return screen_x, screen_y

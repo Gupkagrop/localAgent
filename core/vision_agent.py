@@ -19,13 +19,16 @@ from PIL import Image
 from core.screen_tools import POINT
 
 # Системный промпт для Computer-Use в Windows 11
-COMPUTER_USE_SYSTEM_PROMPT = """You are Jarvis, an autonomous Computer-Use AI agent running locally on Windows 11.
+def build_computer_use_prompt(width: int = 1920, height: int = 1080) -> str:
+    """Генерирует системный промпт для Computer-Use с точным разрешением входного изображения."""
+    return f"""You are Jarvis, an autonomous Computer-Use AI agent running locally on Windows 11.
 Your task is to accomplish the user's goal by looking at the desktop screenshot and deciding the next action.
+The screen screenshot resolution is {width}x{height}.
 
 Output your next action in strict JSON format inside a ```json ``` block with these keys:
 - "thought": A brief explanation in Russian of what you see and what you will do.
 - "action": One of ["click", "double_click", "right_click", "type", "press", "hotkey", "scroll", "wait", "ask_confirmation", "finish"]
-- "coordinate": [x, y] in range 0..1000 (relative to the full screen) for click/double_click/right_click actions.
+- "coordinate": [x, y] pixel coordinates on the {width}x{height} image (x: 0..{width}, y: 0..{height}) to click directly on the center of the target element.
 - "text": string to type (for "type" action).
 - "press_enter": boolean, whether to press Enter after typing.
 - "key": string key name for "press" (e.g. "enter", "esc", "tab", "backspace").
@@ -34,12 +37,16 @@ Output your next action in strict JSON format inside a ```json ``` block with th
 - "message": final summary in Russian for "finish" or question for "ask_confirmation".
 
 Rules:
-1. Always look for search bars, icons, buttons, or input fields matching the user request.
-2. If the desired application or browser is visible on the screen or taskbar, click on it.
-3. If you need to search, first click the search field, then type the query.
-4. If the task is completed (e.g. the video started playing, or the window is open), return action "finish".
-5. For dangerous actions (deleting files, sending personal chat messages), return action "ask_confirmation".
+1. Always look for icons, buttons, search bars, or input fields matching the user request.
+2. If the desired application or file is on the desktop, use "double_click" on its icon to launch it.
+3. If an application is on the taskbar, start menu, or browser, a single "click" is sufficient.
+4. When clicking an icon or button, provide the coordinate [x, y] at the visual center of the element.
+5. If you need to search, first click the search field, then type the query.
+6. If the task is completed (e.g. the window is open and active), return action "finish".
+7. For dangerous actions (deleting files, modifying system registry), return action "ask_confirmation".
 """
+
+COMPUTER_USE_SYSTEM_PROMPT = build_computer_use_prompt(1920, 1080)
 
 
 @dataclass
@@ -534,7 +541,7 @@ def _worker_process_loop(
                     user_content += "Определи следующее действие в формате JSON."
 
                     messages = [
-                        {"role": "system", "content": COMPUTER_USE_SYSTEM_PROMPT},
+                        {"role": "system", "content": build_computer_use_prompt(target_w, target_h)},
                         {
                             "role": "user",
                             "content": [
@@ -620,7 +627,9 @@ def _worker_process_loop(
                     # 5. Выполнение физического действия через Win32 API
                     if action.action_type in ("click", "double_click", "right_click") and action.coordinate:
                         norm_x, norm_y = action.coordinate
-                        screen_x, screen_y = screen.denormalize_coordinate(norm_x=norm_x, norm_y=norm_y)
+                        screen_x, screen_y = screen.denormalize_coordinate(
+                            norm_x=norm_x, norm_y=norm_y, image_size=(target_w, target_h)
+                        )
                         failsafe.update_known_position(screen_x, screen_y)
 
                         status_queue.put({

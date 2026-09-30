@@ -7,7 +7,14 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-from core.vision_agent import ActionParser, FailSafeMonitor, VisionAction, VisionAgentProcessManager
+from core.vision_agent import (
+    ActionParser,
+    FailSafeMonitor,
+    VisionAction,
+    VisionAgentProcessManager,
+    build_computer_use_prompt,
+    COMPUTER_USE_SYSTEM_PROMPT,
+)
 from gui.main_window import MainWindow
 
 
@@ -171,6 +178,35 @@ class TestVisionAgentParser(unittest.TestCase):
         self.assertFalse(ActionParser.is_dangerous_hotkey(["ctrl", "t"]))
         self.assertFalse(ActionParser.is_dangerous_hotkey(["alt", "tab"]))
         self.assertFalse(ActionParser.is_dangerous_hotkey([]))
+
+    def test_build_computer_use_prompt_dimensions(self) -> None:
+        """Проверка динамического формирования системного промпта с точным разрешением входного кадра."""
+        prompt = build_computer_use_prompt(1260, 784)
+        self.assertIn("The screen screenshot resolution is 1260x784.", prompt)
+        self.assertIn("x: 0..1260, y: 0..784", prompt)
+        self.assertIn('"double_click"', prompt)
+        self.assertIn("double_click", prompt)
+
+        # Обратная совместимость с дефолтным промптом
+        self.assertIn("1920x1080", COMPUTER_USE_SYSTEM_PROMPT)
+
+    def test_parse_double_click_actions(self) -> None:
+        """Парсинг двойного клика для запуска приложений с рабочего стола."""
+        # Прямое указание double_click
+        raw1 = '{"thought": "Двойной клик на Obsidian", "action": "double_click", "coordinate": [36, 278]}'
+        act1 = ActionParser.parse(raw1)
+        self.assertEqual(act1.action_type, "double_click")
+        self.assertEqual(act1.coordinate, (36, 278))
+
+        # Алиас double-click
+        raw2 = '{"thought": "Запуск программы", "action": "double-click", "coordinate": [50, 100]}'
+        act2 = ActionParser.parse(raw2)
+        self.assertEqual(act2.action_type, "double_click")
+
+        # Алиас doubleclick
+        raw3 = '{"thought": "Запуск программы", "action": "doubleclick", "coordinate": [50, 100]}'
+        act3 = ActionParser.parse(raw3)
+        self.assertEqual(act3.action_type, "double_click")
 
 
 class TestFailSafeMonitor(unittest.TestCase):

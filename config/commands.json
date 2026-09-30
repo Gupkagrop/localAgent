@@ -8,6 +8,8 @@
     "диспетчер задач": "taskmgr.exe",
     "телеграм": "telegram.exe",
     "терминал": "wt.exe",
+    "обсидиан": "obsidian.exe",
+    "obsidian": "obsidian.exe",
     "antigravity": "antigravity"
   },
   "urls": {

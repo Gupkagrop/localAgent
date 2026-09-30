@@ -60,7 +60,9 @@ APP_TITLE_ALIASES: dict[str, list[str]] = {
     "дискорд": ["discord"],
     "discord": ["discord"],
     "стим": ["steam"],
-    "steam": ["steam"]
+    "steam": ["steam"],
+    "обсидиан": ["obsidian"],
+    "obsidian": ["obsidian"]
 }
 
 DEFAULT_EXECUTABLES: dict[str, str] = {
@@ -84,6 +86,8 @@ DEFAULT_EXECUTABLES: dict[str, str] = {
     "ворд": "winword.exe",
     "excel": "excel.exe",
     "эксель": "excel.exe",
+    "обсидиан": "obsidian.exe",
+    "obsidian": "obsidian.exe",
     "antigravity": "antigravity"
 }
 
@@ -207,6 +211,78 @@ class DesktopAppController:
             except Exception:
                 return False
 
+    @staticmethod
+    def resolve_executable_or_shortcut(target_exe: str, app_name: str = "") -> str:
+        """
+        Интеллектуальный поиск пути к исполняемому файлу или ярлыку Windows (.lnk).
+        Если файл существует или находится в PATH — возвращает его.
+        Иначе ищет в Program Files, AppData, на рабочем столе и в меню Пуск.
+        """
+        import shutil
+        if not target_exe:
+            return target_exe
+
+        # 1. Если это существующий путь
+        if os.path.exists(target_exe):
+            return target_exe
+
+        # 2. Если файл находится в системном PATH
+        if shutil.which(target_exe):
+            return target_exe
+
+        base_stem = os.path.splitext(os.path.basename(target_exe))[0].lower()
+        search_names = {base_stem}
+        if app_name:
+            search_names.add(app_name.lower().strip())
+
+        # 3. Поиск в Program Files и LocalAppData
+        search_dirs = [
+            os.environ.get("ProgramFiles", r"C:\Program Files"),
+            os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs"),
+        ]
+        for sdir in search_dirs:
+            if not os.path.isdir(sdir):
+                continue
+            for name in search_names:
+                candidate = os.path.join(sdir, name, f"{name}.exe")
+                if os.path.exists(candidate):
+                    return candidate
+                try:
+                    for folder in os.listdir(sdir):
+                        if folder.lower() == name:
+                            folder_path = os.path.join(sdir, folder)
+                            if os.path.isdir(folder_path):
+                                for fname in os.listdir(folder_path):
+                                    if fname.lower() in (f"{name}.exe", f"{base_stem}.exe"):
+                                        return os.path.join(folder_path, fname)
+                except Exception:
+                    pass
+
+        # 4. Поиск в ярлыках Рабочего стола и Меню «Пуск»
+        shortcut_dirs = [
+            os.environ.get("PUBLIC", r"C:\Users\Public") + r"\Desktop",
+            os.path.expanduser(r"~\Desktop"),
+            os.path.expandvars(r"%APPDATA%\Microsoft\Windows\Start Menu\Programs"),
+            os.path.expandvars(r"%ProgramData%\Microsoft\Windows\Start Menu\Programs"),
+        ]
+        for sdir in shortcut_dirs:
+            if not os.path.isdir(sdir):
+                continue
+            for name in search_names:
+                direct_lnk = os.path.join(sdir, f"{name}.lnk")
+                if os.path.exists(direct_lnk):
+                    return direct_lnk
+                try:
+                    for root, _, files in os.walk(sdir):
+                        for f in files:
+                            if f.lower().endswith(".lnk") and any(n in f.lower() for n in search_names):
+                                return os.path.join(root, f)
+                except Exception:
+                    pass
+
+        return target_exe
+
     def launch_or_focus(self, app_name: str, executable: str | None = None) -> tuple[bool, str]:
         """
         Интеллектуальный запуск приложения:
@@ -222,13 +298,14 @@ class DesktopAppController:
 
         # Запуск приложения
         target_exe = executable or DEFAULT_EXECUTABLES.get(clean_name, f"{clean_name}.exe")
+        resolved_exe = self.resolve_executable_or_shortcut(target_exe, clean_name)
         try:
-            if target_exe.lower() == "antigravity":
+            if resolved_exe.lower() == "antigravity":
                 if not self.launch_antigravity_gui():
                     return False, f"Не удалось запустить {app_name}"
             else:
-                os.startfile(target_exe)
-            self.log(f"Запущено приложение: {target_exe}")
+                os.startfile(resolved_exe)
+            self.log(f"Запущено приложение: {resolved_exe}")
 
             # Ожидаем появления окна до 1.5 секунд
             for _ in range(10):
