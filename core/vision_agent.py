@@ -215,6 +215,43 @@ def _worker_process_loop(
     Выполняется в отдельном адресном пространстве процесса Windows.
     """
     try:
+        # На Windows гарантируем изоляцию и согласованную загрузку CUDA/cuDNN для PyTorch
+        if sys.platform == "win32":
+            torch_lib = os.path.join(sys.prefix, "Lib", "site-packages", "torch", "lib")
+            if os.path.exists(torch_lib):
+                try:
+                    os.add_dll_directory(torch_lib)
+                except Exception as dll_dir_err:
+                    print(f"[VisionWorker] Предупреждение add_dll_directory: {dll_dir_err}", file=sys.stderr)
+
+                # Исключаем сторонние версии cublas/cudnn/ctranslate2 из PATH воркера и ставим torch/lib в приоритет
+                current_paths = os.environ.get("PATH", "").split(os.pathsep)
+                filtered_paths = [
+                    p for p in current_paths
+                    if not any(k in p.lower() for k in ("nvidia\\cudnn", "nvidia/cudnn", "nvidia\\cublas", "nvidia/cublas", "ctranslate2"))
+                ]
+                os.environ["PATH"] = os.pathsep.join([torch_lib] + filtered_paths)
+
+                # Предварительно загружаем зависимости в топологическом порядке
+                import ctypes
+                kernel32 = ctypes.WinDLL("kernel32.dll", use_last_error=True)
+                kernel32.LoadLibraryExW.restype = ctypes.c_void_p
+
+                # 1. cuBLAS и CUDA Runtime
+                for dll_name in ("cublasLt64_12.dll", "cublas64_12.dll", "cudart64_12.dll"):
+                    dll_file = os.path.join(torch_lib, dll_name)
+                    if os.path.exists(dll_file):
+                        kernel32.LoadLibraryExW(dll_file, None, 0x00001100)
+
+                # 2. cuDNN библиотеки
+                for dll_name in (
+                    "cudnn_ops64_9.dll", "cudnn_graph64_9.dll", "cudnn_adv64_9.dll",
+                    "cudnn64_9.dll", "cudnn_cnn64_9.dll"
+                ):
+                    dll_file = os.path.join(torch_lib, dll_name)
+                    if os.path.exists(dll_file):
+                        kernel32.LoadLibraryExW(dll_file, None, 0x00001100)
+
         import torch
         from transformers import AutoProcessor, BitsAndBytesConfig, Qwen2_5_VLForConditionalGeneration
         from core.screen_tools import ScreenController

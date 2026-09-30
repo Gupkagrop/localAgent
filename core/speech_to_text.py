@@ -3,26 +3,31 @@
 Задействует CUDA на GPU NVIDIA RTX 5050 с поддержкой полной выгрузки из VRAM
 и потокобезопасной блокировкой (thread-safe lock) для исключения взаимных блокировок.
 """
+from __future__ import annotations
+
 import os
 import sys
 import gc
 import threading
+from typing import TYPE_CHECKING
 import numpy as np
 
-# Регистрация путей к CUDA DLL (cublas64_12.dll, cudnn) для CTranslate2
-for dll_sub in [
-    os.path.join(sys.prefix, 'Lib', 'site-packages', 'ctranslate2'),
-    os.path.join(sys.prefix, 'Lib', 'site-packages', 'nvidia', 'cublas', 'bin'),
-    os.path.join(sys.prefix, 'Lib', 'site-packages', 'nvidia', 'cudnn', 'bin'),
-]:
-    if os.path.exists(dll_sub):
-        try:
-            os.add_dll_directory(dll_sub)
-            os.environ["PATH"] = dll_sub + os.pathsep + os.environ.get("PATH", "")
-        except Exception as dll_err:
-            pass
+if TYPE_CHECKING:
+    from faster_whisper import WhisperModel
 
-from faster_whisper import WhisperModel
+def _ensure_cuda_dlls() -> None:
+    """Регистрирует пути к зависимостям CUDA/cuDNN для CTranslate2 при работе на GPU."""
+    for dll_sub in [
+        os.path.join(sys.prefix, 'Lib', 'site-packages', 'ctranslate2'),
+        os.path.join(sys.prefix, 'Lib', 'site-packages', 'nvidia', 'cublas', 'bin'),
+        os.path.join(sys.prefix, 'Lib', 'site-packages', 'nvidia', 'cudnn', 'bin'),
+    ]:
+        if os.path.exists(dll_sub):
+            try:
+                os.add_dll_directory(dll_sub)
+                os.environ["PATH"] = dll_sub + os.pathsep + os.environ.get("PATH", "")
+            except Exception as dll_err:
+                pass
 
 class SpeechToText:
     def __init__(self, model_size: str = "turbo", device: str = "cuda") -> None:
@@ -101,6 +106,10 @@ class SpeechToText:
         if self._model is not None:
             return True
         try:
+            if self.device == "cuda":
+                _ensure_cuda_dlls()
+            from faster_whisper import WhisperModel
+
             compute_type = "float16" if self.device == "cuda" else "int8"
             self._model = WhisperModel(
                 self.model_size,
