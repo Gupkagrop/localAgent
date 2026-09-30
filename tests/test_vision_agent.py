@@ -94,11 +94,47 @@ class TestVisionAgentParser(unittest.TestCase):
         self.assertIn("Отправить сообщение", act.message)
 
     def test_parse_malformed_json_fallback(self) -> None:
-        """Корректная обработка синтаксически невалидного ответа."""
+        """Корректная обработка синтаксически невалидного ответа (возвращает action_type=error)."""
         raw = "Я не знаю, что делать дальше, вот текст без скобок."
         act = ActionParser.parse(raw)
+        self.assertEqual(act.action_type, "error")
+        self.assertIn("Синтаксическая ошибка в JSON", act.thought)
+
+    def test_parse_json_repair_unescaped_quotes(self) -> None:
+        """Восстановление JSON с неэкранированными кавычками внутри мысли (thought)."""
+        raw = '{"thought": "Нажимаю на кнопку "Пуск" на панели задач", "action": "click", "coordinate": [30, 980]}'
+        act = ActionParser.parse(raw)
+        self.assertEqual(act.action_type, "click")
+        self.assertEqual(act.coordinate, (30, 980))
+        self.assertIn("Пуск", act.thought)
+
+    def test_parse_json_repair_trailing_comma(self) -> None:
+        """Восстановление JSON с завершающей запятой перед скобкой."""
+        raw = '{"thought": "Клик по кнопке", "action": "click", "coordinate": [120, 340],}'
+        act = ActionParser.parse(raw)
+        self.assertEqual(act.action_type, "click")
+        self.assertEqual(act.coordinate, (120, 340))
+
+    def test_parse_json_repair_single_quotes(self) -> None:
+        """Восстановление ответа в стиле Python словаря с одинарными кавычками."""
+        raw = "{'thought': 'Ожидание загрузки', 'action': 'wait'}"
+        act = ActionParser.parse(raw)
+        self.assertEqual(act.action_type, "wait")
+        self.assertEqual(act.thought, "Ожидание загрузки")
+
+    def test_parse_json_surrounding_text(self) -> None:
+        """Извлечение JSON из текста с вводными и заключительными фразами."""
+        raw = 'Конечно! Вот моё действие:\n```json\n{"thought": "Готово", "action": "finish", "message": "Задача выполнена"}\n```\nНадеюсь помог!'
+        act = ActionParser.parse(raw)
         self.assertEqual(act.action_type, "finish")
-        self.assertIn("Не удалось распознать JSON", act.thought)
+        self.assertEqual(act.message, "Задача выполнена")
+
+    def test_parse_json_infer_click_from_coordinates(self) -> None:
+        """Автоматическое определение клика, если action не указан, но есть координаты."""
+        raw = '{"thought": "Нажимаю на поле ввода", "coordinate": [450, 200]}'
+        act = ActionParser.parse(raw)
+        self.assertEqual(act.action_type, "click")
+        self.assertEqual(act.coordinate, (450, 200))
 
     def test_parse_alias_normalization(self) -> None:
         """Нормализация синонимов и алиасов действий модели в ActionParser."""

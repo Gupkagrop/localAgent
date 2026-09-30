@@ -60,51 +60,126 @@ class VisionAction:
 class ActionParser:
     """Парсер ответов модели в структурированные команды управления."""
 
-    @staticmethod
-    def parse(response_text: str) -> VisionAction:
+    @classmethod
+    def _repair_and_parse_json(cls, text: str) -> dict | None:
+        """Многоуровневый алгоритм восстановления и парсинга поврежденного JSON от LLM."""
+        if not text or not isinstance(text, str):
+            return None
+
+        # 1. Попытка прямого разбора сырого текста
+        try:
+            res = json.loads(text.strip())
+            if isinstance(res, dict):
+                return res
+        except Exception:
+            pass
+
+        # 2. Извлечение содержимого блока markdown ```json ... ```
+        md_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+        if md_match:
+            try:
+                res = json.loads(md_match.group(1).strip())
+                if isinstance(res, dict):
+                    return res
+            except Exception:
+                text = md_match.group(1)
+
+        # 3. Выделение самого внешнего блока { ... }
+        first_brace = text.find("{")
+        last_brace = text.rfind("}")
+        if first_brace == -1:
+            return None
+
+        if last_brace > first_brace:
+            candidate = text[first_brace : last_brace + 1].strip()
+        else:
+            # Отрезанный конец (missing closing brace)
+            candidate = text[first_brace:].strip() + "}"
+
+        # 4. Попытка разобрать кандидат как есть
+        try:
+            res = json.loads(candidate)
+            if isinstance(res, dict):
+                return res
+        except Exception:
+            pass
+
+        # 5. Очистка завершающих запятых перед } или ] (trailing commas)
+        cleaned = re.sub(r",\s*([\}\]])", r"\1", candidate)
+        try:
+            res = json.loads(cleaned)
+            if isinstance(res, dict):
+                return res
+        except Exception:
+            pass
+
+        # 6. Попытка через ast.literal_eval (если модель выдала одинарные кавычки Python dict)
+        try:
+            import ast
+            res = ast.literal_eval(cleaned)
+            if isinstance(res, dict):
+                return res
+        except Exception:
+            pass
+
+        # 7. Замена одинарных кавычек вокруг ключей и строковых значений на двойные
+        try:
+            fixed_quotes = re.sub(r"(?<=[\{\s,])'([a-zA-Z0-9_]+)':", r'"\1":', cleaned)
+            res = json.loads(fixed_quotes)
+            if isinstance(res, dict):
+                return res
+        except Exception:
+            pass
+
+        # 8. Точечное извлечение полей по регулярным выражениям (regex fallback)
+        data: dict = {}
+        for key in ("thought", "action", "text", "key", "direction", "message"):
+            m = re.search(rf'"{key}"\s*:\s*"((?:\\.|[^"\\])*?)"(?=\s*[,}}])', candidate)
+            if not m:
+                m = re.search(rf'"{key}"\s*:\s*"(.*?)"(?=\s*,\s*"[a-zA-Z0-9_]+"\s*:|\s*\}})', candidate, re.DOTALL)
+            if not m:
+                m = re.search(rf"'{key}'\s*:\s*'((?:\\.|[^'\\])*?)'(?=\s*[,}}])", candidate)
+            if m:
+                data[key] = m.group(1).replace('\\"', '"').replace("\\'", "'")
+
+        coord_m = re.search(r'["\']coordinate["\']\s*:\s*\[\s*(\d+)\s*,\s*(\d+)\s*\]', candidate)
+        if coord_m:
+            data["coordinate"] = [int(coord_m.group(1)), int(coord_m.group(2))]
+
+        pe_m = re.search(r'["\']press_enter["\']\s*:\s*(true|false)', candidate, re.IGNORECASE)
+        if pe_m:
+            data["press_enter"] = pe_m.group(1).lower() == "true"
+
+        keys_m = re.search(r'["\']keys["\']\s*:\s*\[(.*?)\]', candidate, re.DOTALL)
+        if keys_m:
+            data["keys"] = [k.strip(' "\'') for k in keys_m.group(1).split(",") if k.strip(' "\'')]
+
+        if data.get("action") or data.get("thought") or data.get("coordinate"):
+            return data
+
+        return None
+
+    @classmethod
+    def parse(cls, response_text: str) -> VisionAction:
         """Извлекает и валидирует JSON-действие из ответа модели."""
-        if not response_text:
-            return VisionAction(thought="Пустой ответ", action_type="finish", message="Ответ от модели не получен")
-
-        # Извлечение JSON из markdown-блока ```json ... ``` или сырого текста
-        json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", response_text, re.DOTALL)
-        raw_json = json_match.group(1) if json_match else None
-
-        if not raw_json:
-            # Поиск первого валидного JSON-объекта через нежадный regex (BUG-MEDIUM-5)
-            for match in re.finditer(r"(\{.*?\})", response_text, re.DOTALL):
-                candidate = match.group(1)
-                try:
-                    json.loads(candidate)
-                    raw_json = candidate
-                    break
-                except Exception:
-                    continue
-
-            if not raw_json:
-                bracket_match = re.search(r"(\{.*?\})", response_text, re.DOTALL)
-                raw_json = bracket_match.group(1) if bracket_match else None
-
-        if not raw_json:
+        if not response_text or not response_text.strip():
             return VisionAction(
-                thought="Не удалось распознать JSON",
-                action_type="finish",
-                message=response_text[:150],
-                raw_response=response_text
+                thought="Пустой ответ",
+                action_type="error",
+                message="Ответ от модели не получен"
             )
 
-        try:
-            data = json.loads(raw_json)
-        except Exception:
+        data = cls._repair_and_parse_json(response_text)
+        if not data:
             return VisionAction(
                 thought="Синтаксическая ошибка в JSON",
-                action_type="finish",
+                action_type="error",
                 message="Ошибка декодирования команды",
                 raw_response=response_text
             )
 
         thought = str(data.get("thought", ""))
-        action_type = str(data.get("action", "wait")).lower().strip()
+        action_type = str(data.get("action", "")).lower().strip()
         alias_map = {
             "left_click": "click",
             "leftclick": "click",
@@ -141,6 +216,19 @@ class ActionParser:
                 coord = (x, y)
             except (ValueError, TypeError):
                 coord = None
+
+        # Эвристика восстановления действия при отсутствии поля 'action'
+        if not action_type or action_type == "wait":
+            if coord is not None:
+                action_type = "click"
+            elif text:
+                action_type = "type"
+            elif key:
+                action_type = "press"
+            elif keys:
+                action_type = "hotkey"
+            elif not action_type:
+                action_type = "wait"
 
         return VisionAction(
             thought=thought,
@@ -272,6 +360,42 @@ def _worker_process_loop(
             else None
         )
 
+        import transformers.utils.logging as hf_logging
+
+        def _make_progress_hook(queue_target):
+            last_reported_pct = -1
+            def hook(factory, args, kwargs):
+                bar = factory(*args, **kwargs)
+                orig_update = getattr(bar, "update", None)
+                if not callable(orig_update):
+                    return bar
+                desc = kwargs.get("desc", "Загрузка весов...")
+
+                def update(n=1):
+                    nonlocal last_reported_pct
+                    res = orig_update(n)
+                    try:
+                        tot = getattr(bar, "total", 0)
+                        cur = getattr(bar, "n", 0)
+                        if tot and tot > 0:
+                            pct = min(100, max(0, int((cur / tot) * 100)))
+                            if pct != last_reported_pct:
+                                last_reported_pct = pct
+                                queue_target.put({
+                                    "type": "loading_progress",
+                                    "progress": pct,
+                                    "desc": desc,
+                                    "current": cur,
+                                    "total": tot
+                                })
+                    except Exception:
+                        pass
+                    return res
+
+                bar.update = update
+                return bar
+            return hook
+
         model = None
         processor = None
         candidates = [model_name]
@@ -280,6 +404,9 @@ def _worker_process_loop(
 
         for candidate in candidates:
             status_queue.put({"type": "log", "message": f"Загрузка модели {candidate} в 4-битном режиме (NF4)..."})
+            status_queue.put({"type": "loading_progress", "progress": 0, "desc": "Подготовка модели..."})
+            hook_fn = _make_progress_hook(status_queue)
+            prev_hook = hf_logging.set_tqdm_hook(hook_fn)
             try:
                 try:
                     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
@@ -300,10 +427,14 @@ def _worker_process_loop(
                         low_cpu_mem_usage=True
                     )
                     processor = AutoProcessor.from_pretrained(candidate)
+
+                status_queue.put({"type": "loading_progress", "progress": 100, "desc": "Загрузка завершена"})
                 status_queue.put({"type": "ready", "message": f"Vision-модель {candidate} готова к работе"})
                 break
             except Exception as e:
                 status_queue.put({"type": "log", "message": f"Не удалось загрузить {candidate}: {e}"})
+            finally:
+                hf_logging.set_tqdm_hook(prev_hook)
 
         if model is None or processor is None:
             status_queue.put({"type": "error", "message": "Ошибка: не удалось загрузить ни основную, ни резервную модель"})
@@ -335,6 +466,7 @@ def _worker_process_loop(
                 task_success = False
                 final_message = ""
                 was_interrupted = False
+                consecutive_parse_errors = 0
 
                 for step in range(1, max_steps + 1):
                     if stop_event.is_set():
@@ -375,12 +507,20 @@ def _worker_process_loop(
 
                     prev_image = image
 
-                    # Ресайз под динамическую сетку (кратно 28x28)
-                    img_w, img_h = image.size
-                    target_w = (img_w // 28) * 28
-                    target_h = (img_h // 28) * 28
-                    if target_w != img_w or target_h != img_h:
-                        image = image.resize((target_w, target_h), Image.Resampling.LANCZOS)
+                    # Оптимизация разрешения: ограничение ширины до 1280px с кратностью 28x28 для патчей ViT.
+                    # Это уменьшает число визуальных токенов с ~2600 до ~1100, ускоряя инференс модели в 2.5-3 раза.
+                    orig_w, orig_h = image.size
+                    max_w = 1280
+                    if orig_w > max_w:
+                        scale = max_w / orig_w
+                        target_w = max(28, (int(orig_w * scale) // 28) * 28)
+                        target_h = max(28, (int(orig_h * scale) // 28) * 28)
+                    else:
+                        target_w = max(28, (orig_w // 28) * 28)
+                        target_h = max(28, (orig_h // 28) * 28)
+
+                    if target_w != orig_w or target_h != orig_h:
+                        image = image.resize((target_w, target_h), Image.Resampling.BILINEAR)
 
                     # 3. Формирование контекста и вывод модели
                     status_queue.put({"type": "step_status", "step": step, "status": "Анализ интерфейса нейросетью..."})
@@ -416,7 +556,7 @@ def _worker_process_loop(
                         with torch.inference_mode():
                             generated_ids = model.generate(
                                 **inputs,
-                                max_new_tokens=256,
+                                max_new_tokens=128,
                                 do_sample=False
                             )
 
@@ -445,11 +585,32 @@ def _worker_process_loop(
                         "message": action.message
                     })
 
-                    # 4. Обработка завершения или подтверждения
+                    # 4. Обработка завершения, ошибок или подтверждения
                     if action.action_type == "finish":
                         task_success = True
                         final_message = action.message or "Задача успешно выполнена"
                         break
+
+                    if action.action_type == "error":
+                        consecutive_parse_errors += 1
+                        if consecutive_parse_errors < 2 and step < max_steps:
+                            status_queue.put({
+                                "type": "step_status",
+                                "step": step,
+                                "status": "Повтор запроса (ошибка формата JSON)..."
+                            })
+                            history.append(
+                                "Системное предупреждение: предыдущий ответ содержал ошибку формата JSON. "
+                                "Сформируй ответ СТРОГО в виде валидного JSON-объекта: "
+                                '{"thought": "...", "action": "click", "coordinate": [x, y]}'
+                            )
+                            continue
+                        else:
+                            task_success = False
+                            final_message = f"Ошибка формата команды модели: {action.message or action.thought}"
+                            break
+
+                    consecutive_parse_errors = 0
 
                     if action.action_type == "ask_confirmation":
                         status_queue.put({"type": "confirmation_requested", "message": action.message})

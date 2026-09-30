@@ -108,7 +108,7 @@ class AppCoordinator(QObject):
 
         # Фоновый запуск Vision-агента в режиме Always-Warm при наличии модели
         if self.decision_engine.is_llm_available():
-            self.window.set_llm_status("loading")
+            self.window.set_llm_status("loading", progress=0)
             self.log("🤖 Запуск фонового процесса Vision-агента и загрузка весов Jedi-3B в GPU (VRAM)...")
             self.vision_manager.start()
         else:
@@ -673,7 +673,10 @@ class AppCoordinator(QObject):
                 if self.is_agent_running:
                     self.tray_state_signal.emit("idle")
 
-            if ev_type == "ready":
+            if ev_type == "loading_progress":
+                progress = int(ev.get("progress", 0))
+                self.window.set_llm_status("loading", progress=progress)
+            elif ev_type == "ready":
                 self.window.set_llm_status("ready")
                 self.log("✓ Vision-модель Jedi-3B успешно загружена в GPU и готова к выполнению задач.")
             elif ev_type == "log":
@@ -760,9 +763,12 @@ class AppCoordinator(QObject):
             self.stt.unload_model()
             self.decision_engine.unload_model()
             self.vision_manager.stop()
+            self.window.set_llm_status("not_installed" if not self.decision_engine.is_llm_available() else False)
             self.log("Ассистент остановлен. Видеопамять (VRAM) освобождена до 0 МБ.")
         else:
             self._apply_activation_mode()
+            if self.decision_engine.is_llm_available():
+                self.window.set_llm_status("loading", progress=0)
             self.vision_manager.start()
             self.log("Ассистент активен и готов к командам.")
 

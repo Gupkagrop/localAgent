@@ -571,8 +571,10 @@ class MainWindow(QMainWindow):
             self.btn_toggle_agent.setObjectName("DangerButton")
             self.card_vram.status_label.setText("~4.7 ГБ (RTX 5050)")
             self.card_vram.status_label.setStyleSheet("color: #60A5FA;")
-            self.card_ai.status_label.setText("Jedi-3B (Always-Warm)")
-            self.card_ai.status_label.setStyleSheet("color: #34D399;")
+            cur_ai = self.card_ai.status_label.text().lower()
+            if not ("загрузка" in cur_ai or "ошибка" in cur_ai):
+                self.card_ai.status_label.setText("Jedi-3B (Always-Warm)")
+                self.card_ai.status_label.setStyleSheet("color: #34D399;")
         else:
             self.status_badge.setText("⚪ ОСТАНОВЛЕН (0 МБ VRAM)")
             self.status_badge.setStyleSheet("""
@@ -612,17 +614,18 @@ class MainWindow(QMainWindow):
                 cur_name = cur_name[:20] + "..."
             self.card_mic.status_label.setText(cur_name)
 
-    def set_llm_status(self, status: str | bool) -> None:
-        """Обновляет визуальный статус Vision-модели в карточке и кнопке управления."""
+    def set_llm_status(self, status: str | bool, progress: int | None = None) -> None:
+        """Обновляет визуальный статус Vision-модели в карточке и кнопке управления с процентами загрузки."""
         if isinstance(status, bool):
             status_key = "ready" if status else "not_installed"
         else:
             status_key = str(status).lower().strip()
 
         if status_key == "loading":
-            self.card_ai.status_label.setText("Загрузка в GPU...")
+            pct_str = f" {progress}%" if progress is not None else ""
+            self.card_ai.status_label.setText(f"Загрузка в GPU...{pct_str}")
             self.card_ai.status_label.setStyleSheet("color: #F59E0B;")
-            self.btn_download_llm.setText("⏳ Загрузка в VRAM...")
+            self.btn_download_llm.setText(f"⏳ Загрузка в VRAM...{pct_str}")
             self.btn_download_llm.setEnabled(False)
         elif status_key == "ready":
             self.card_ai.status_label.setText("Jedi-3B (Готова / Warm)")
