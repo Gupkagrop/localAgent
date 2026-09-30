@@ -7,7 +7,6 @@ import os
 import sys
 import gc
 import threading
-from typing import Optional
 import numpy as np
 
 # Регистрация путей к CUDA DLL (cublas64_12.dll, cudnn) для CTranslate2
@@ -20,16 +19,16 @@ for dll_sub in [
         try:
             os.add_dll_directory(dll_sub)
             os.environ["PATH"] = dll_sub + os.pathsep + os.environ.get("PATH", "")
-        except Exception:
+        except Exception as dll_err:
             pass
 
 from faster_whisper import WhisperModel
 
 class SpeechToText:
-    def __init__(self, model_size: str = "turbo", device: str = "cuda"):
+    def __init__(self, model_size: str = "turbo", device: str = "cuda") -> None:
         self.model_size = model_size
         self.device = device
-        self._model: Optional[WhisperModel] = None
+        self._model: WhisperModel | None = None
         self._lock = threading.Lock()
         self._initial_prompt: str = (
             "Джарвис, открой, запусти, сделай, Antigravity, agy, терминал, git, commit, push, "
@@ -49,6 +48,7 @@ class SpeechToText:
                 del self._model
                 self._model = None
                 gc.collect()
+                print("[STT] Модель Faster-Whisper выгружена из памяти")
 
     def is_loaded(self) -> bool:
         return self._model is not None
@@ -110,7 +110,8 @@ class SpeechToText:
                 download_root=os.path.expanduser("~/.cache/huggingface/hub")
             )
             return True
-        except Exception:
+        except Exception as e:
+            print(f"[STT Warning] Не удалось загрузить модель {self.model_size} на {self.device}: {e}. Попытка загрузки на CPU...")
             try:
                 self._model = WhisperModel(
                     self.model_size,
@@ -121,5 +122,6 @@ class SpeechToText:
                 )
                 self.device = "cpu"
                 return True
-            except Exception:
+            except Exception as cpu_e:
+                print(f"[STT Error] Не удалось загрузить модель {self.model_size} на CPU: {cpu_e}")
                 return False

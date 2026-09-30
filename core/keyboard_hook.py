@@ -7,7 +7,8 @@
 import time
 import ctypes
 import threading
-from typing import Callable, Optional
+import sys
+from collections.abc import Callable
 import win32gui
 import win32con
 from pynput import keyboard
@@ -38,22 +39,22 @@ HOLD_THRESHOLD_SEC = 0.40  # Порог удержания для вызова �
 class CopilotKeyHook:
     def __init__(
         self,
-        on_click: Optional[Callable[[], None]] = None,
-        on_hold: Optional[Callable[[], None]] = None,
-        on_debug: Optional[Callable[[str], None]] = None,
-        on_any_key: Optional[Callable[[int, str], None]] = None
-    ):
+        on_click: Callable[[], None] | None = None,
+        on_hold: Callable[[], None] | None = None,
+        on_debug: Callable[[str], None] | None = None,
+        on_any_key: Callable[[int, str], None] | None = None
+    ) -> None:
         self.on_click = on_click
         self.on_hold = on_hold
         self.on_debug = on_debug
         self.on_any_key = on_any_key
 
-        self._listener: Optional[keyboard.Listener] = None
+        self._listener: keyboard.Listener | None = None
         self._is_running = False
 
-        self._press_start_time: Optional[float] = None
+        self._press_start_time: float | None = None
         self._hold_triggered = False
-        self._timer: Optional[threading.Timer] = None
+        self._timer: threading.Timer | None = None
         self._copilot_last_seen = 0.0
 
     def _mask_win_key(self):
@@ -69,8 +70,8 @@ class CopilotKeyHook:
             # 2. Принудительно отпускаем Shift и Win, предотвращая вызов SearchHost
             ctypes.windll.user32.keybd_event(VK_LSHIFT, 0, KEYEVENTF_KEYUP, 0)
             ctypes.windll.user32.keybd_event(VK_LWIN, 0, KEYEVENTF_KEYUP, 0)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[KeyboardHook] Предупреждение suppress_start_menu: {e}", file=sys.stderr)
 
     def dismiss_search_window(self) -> None:
         """Закрывает окно поиска Windows SearchHost при попытке всплытия."""
@@ -80,8 +81,8 @@ class CopilotKeyHook:
                 hwnd = win32gui.FindWindow("Windows.UI.Core.CoreWindow", "Search")
             if hwnd and win32gui.IsWindow(hwnd):
                 win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[KeyboardHook] Предупреждение dismiss_search_window: {e}", file=sys.stderr)
 
     def _win32_event_filter(self, msg: int, data) -> bool:
         """
@@ -194,10 +195,12 @@ class CopilotKeyHook:
                     return False
 
             return True
-        except Exception:
+        except Exception as e:
+            if self.on_debug:
+                self.on_debug(f"Исключение в хуке клавиатуры: {e}")
             return True
 
-    def start(self):
+    def start(self) -> None:
         """Запускает перехватчик событий клавиатуры."""
         if self._is_running:
             return
@@ -205,9 +208,14 @@ class CopilotKeyHook:
         self._listener = keyboard.Listener(win32_event_filter=self._win32_event_filter)
         self._listener.start()
 
-    def stop(self):
+    def stop(self) -> None:
         """Останавливает перехватчик."""
         self._is_running = False
         if self._listener:
-            self._listener.stop()
-            self._listener = None
+            try:
+                self._listener.stop()
+            except Exception as e:
+                if self.on_debug:
+                    self.on_debug(f"Ошибка при остановке клавиатурного хука: {e}")
+            finally:
+                self._listener = None

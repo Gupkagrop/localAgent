@@ -3,13 +3,13 @@
 """
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QRadioButton, QCheckBox, QButtonGroup
 )
 from PyQt6.QtGui import QFont
 
 class CloseConfirmDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Закрытие Antigravity Voice")
         self.setFixedSize(400, 220)

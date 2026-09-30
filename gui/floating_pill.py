@@ -3,7 +3,6 @@
 Отображает статус записи («Слушаю...»), уровень голоса в виде неонового эквалайзера и распознаваемый текст.
 """
 import math
-from typing import Optional
 from PyQt6.QtCore import Qt, QTimer, QPoint, QRectF, QPointF
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QLabel, QGraphicsDropShadowEffect
 from PyQt6.QtGui import (
@@ -19,7 +18,7 @@ class AudioWaveVisualizer(QWidget):
     и мягкое гармоническое дыхание в тишине.
     """
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFixedSize(38, 24)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -102,7 +101,7 @@ class FloatingPill(QWidget):
     Отображает спектральный анализатор голоса, статус и распознаваемый текст.
     """
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
         # Окно без рамок, поверх всех окон, скрыто из панели задач
@@ -270,7 +269,7 @@ class ClickIndicatorOverlay(QWidget):
     Показывает точное место действия Vision-агента на экране Windows.
     """
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
@@ -291,13 +290,9 @@ class ClickIndicatorOverlay(QWidget):
         self._timer.timeout.connect(self._animate_step)
 
     def show_click(self, screen_x: int, screen_y: int) -> None:
-        """Показывает анимацию клика в координатах экрана с учетом High DPI масштабирования."""
-        screen = QGuiApplication.screenAt(QPoint(int(screen_x), int(screen_y))) or QGuiApplication.primaryScreen()
-        dpr = screen.devicePixelRatio() if screen else 1.0
-        logical_x = screen_x / dpr
-        logical_y = screen_y / dpr
+        """Показывает анимацию клика в экранных координатах с центрированием маркера."""
         half = self.size_px // 2
-        self.move(int(logical_x - half), int(logical_y - half))
+        self.move(int(screen_x - half), int(screen_y - half))
         self._current_step = 0
         self.show()
         self.raise_()
@@ -313,25 +308,28 @@ class ClickIndicatorOverlay(QWidget):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        progress = self._current_step / float(self._max_steps)
-        radius = 8.0 + progress * 20.0
-        alpha = int(240 * (1.0 - progress))
+            progress = self._current_step / float(self._max_steps)
+            radius = 8.0 + progress * 20.0
+            alpha = int(240 * (1.0 - progress))
 
-        center_x = self.width() / 2.0
-        center_y = self.height() / 2.0
+            center_x = self.width() / 2.0
+            center_y = self.height() / 2.0
 
-        # Внешнее пульсирующее кольцо
-        pen = QPen(QColor(0, 240, 255, alpha))
-        pen.setWidthF(2.5)
-        painter.setPen(pen)
-        painter.setBrush(QBrush(QColor(0, 240, 255, int(alpha * 0.25))))
-        painter.drawEllipse(QPointF(center_x, center_y), radius, radius)
+            # Внешнее пульсирующее кольцо
+            pen = QPen(QColor(0, 240, 255, alpha))
+            pen.setWidthF(2.5)
+            painter.setPen(pen)
+            painter.setBrush(QBrush(QColor(0, 240, 255, int(alpha * 0.25))))
+            painter.drawEllipse(QPointF(center_x, center_y), radius, radius)
 
-        # Центральная точка клика
-        center_pen = QPen(QColor(255, 255, 255, alpha))
-        center_pen.setWidthF(1.5)
-        painter.setPen(center_pen)
-        painter.setBrush(QBrush(QColor(0, 240, 255, alpha)))
-        painter.drawEllipse(QPointF(center_x, center_y), 4.0, 4.0)
+            # Центральная точка клика
+            center_pen = QPen(QColor(255, 255, 255, alpha))
+            center_pen.setWidthF(1.5)
+            painter.setPen(center_pen)
+            painter.setBrush(QBrush(QColor(0, 240, 255, alpha)))
+            painter.drawEllipse(QPointF(center_x, center_y), 4.0, 4.0)
+        finally:
+            painter.end()

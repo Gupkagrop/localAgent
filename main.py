@@ -149,8 +149,8 @@ class AppCoordinator(QObject):
         # Создаем ярлык на рабочем столе при первом запуске
         try:
             create_desktop_shortcut()
-        except Exception:
-            pass
+        except Exception as e:
+            self.log(f"Не удалось создать ярлык на рабочем столе: {e}")
 
         self._log_system_readiness()
 
@@ -282,8 +282,8 @@ class AppCoordinator(QObject):
         if os.path.exists(path):
             try:
                 winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
-            except Exception:
-                pass
+            except Exception as e:
+                self.log(f"Не удалось воспроизвести звук {sound_name}: {e}")
 
     def _apply_activation_mode(self):
         """Применяет режим активации (фоновый Wake Word Джарвис)."""
@@ -921,6 +921,7 @@ def main():
 
     is_minimized = "--minimized" in sys.argv
     coordinator = AppCoordinator(is_minimized=is_minimized)
+    app.coordinator = coordinator  # Сохраняем ссылку в приложении для предотвращения GC
 
     sys.exit(app.exec())
 

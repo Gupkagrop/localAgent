@@ -1,9 +1,12 @@
 """
 Управление системным треем Windows (QSystemTrayIcon) с динамической индикацией статусов.
 """
+from typing import Literal
 from PyQt6.QtCore import Qt, pyqtSignal, QObject, QTimer
 from PyQt6.QtWidgets import QSystemTrayIcon, QMenu
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont
+
+TrayState = Literal["idle", "listening", "working", "stopped"]
 
 
 class TrayManager(QObject):
@@ -16,7 +19,7 @@ class TrayManager(QObject):
         super().__init__(parent)
         self.tray_icon = QSystemTrayIcon(parent)
 
-        self._current_state: str = "idle"
+        self._current_state: TrayState = "idle"
         self._pulse_phase: int = 0
 
         # Таймер пульсации для анимированных состояний (listening / working)
@@ -142,20 +145,17 @@ class TrayManager(QObject):
         painter.end()
         self.tray_icon.setIcon(QIcon(pixmap))
 
-    def _create_icon(self) -> None:
-        """Совместимость для обратных вызовов: отрисовка иконки."""
-        self._render_icon()
-
     def _on_anim_tick(self) -> None:
         """Шаг таймера анимации пульсирующего индикатора."""
         self._pulse_phase = 1 if self._pulse_phase == 0 else 0
         self._render_icon()
 
-    def set_state(self, state: str) -> None:
+    def set_state(self, state: TrayState | str) -> None:
         """Устанавливает динамическое состояние трея: idle, listening, working, stopped."""
-        normalized = state.lower().strip()
-        if normalized not in ("idle", "listening", "working", "stopped"):
-            normalized = "idle"
+        normalized: TrayState = "idle"
+        raw_state = state.lower().strip()
+        if raw_state in ("idle", "listening", "working", "stopped"):
+            normalized = raw_state  # type: ignore[assignment]
 
         self._current_state = normalized
 

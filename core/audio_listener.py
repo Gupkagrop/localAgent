@@ -6,12 +6,18 @@
 - Потокобезопасная запись команд (Tap-to-Talk)
 - Фоновое распознавание ключевого слова («Джарвис») без блокировки аудиопотока
 """
+from __future__ import annotations
+
 import time
 import re
 import threading
-from typing import Callable, Optional
+import sys
+from typing import TYPE_CHECKING, Callable
 import numpy as np
 import sounddevice as sd
+
+if TYPE_CHECKING:
+    from core.speech_to_text import SpeechToText
 
 SAMPLE_RATE = 16000
 CHUNK_SIZE = 512  # 32 мс при 16 кГц
@@ -19,27 +25,27 @@ CHUNK_SIZE = 512  # 32 мс при 16 кГц
 class AudioListener:
     def __init__(
         self,
-        device_index: Optional[int] = None,
-        on_vu_meter: Optional[Callable[[float], None]] = None
-    ):
+        device_index: int | None = None,
+        on_vu_meter: Callable[[float], None] | None = None
+    ) -> None:
         self.device_index = device_index
         self.on_vu_meter = on_vu_meter
 
         self._is_running = False
-        self._stream_thread: Optional[threading.Thread] = None
+        self._stream_thread: threading.Thread | None = None
         self._state_lock = threading.Lock()
 
         # Режимы работы: "idle", "wake_listen", "recording"
         self._mode = "idle"
         self._wake_words = ("джарвис", "jarvis")
-        self._on_wake_detected: Optional[Callable] = None
-        self._stt_engine = None
+        self._on_wake_detected: Callable[..., None] | None = None
+        self._stt_engine: SpeechToText | None = None
 
         # Параметры записи команды
         self._record_buffer: list[np.ndarray] = []
         self._record_done_event = threading.Event()
         self._has_spoken = False
-        self._silence_start: Optional[float] = None
+        self._silence_start: float | None = None
         self._record_start_time = 0.0
         self._max_duration_sec = 8.0
 
@@ -52,7 +58,7 @@ class AudioListener:
         self._wake_buffer: list[np.ndarray] = []
         self._wake_pre_buffer: list[np.ndarray] = []
         self._wake_speech_active = False
-        self._wake_silence_start: Optional[float] = None
+        self._wake_silence_start: float | None = None
         self._is_checking_wake = False
 
     @staticmethod
@@ -69,8 +75,8 @@ class AudioListener:
                         "channels": dev.get("max_input_channels"),
                         "default": idx == sd.default.device[0]
                     })
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[AudioListener] Предупреждение: ошибка опроса аудиоустройств: {e}", file=sys.stderr)
         return devices
 
     def start_stream(self):
@@ -244,8 +250,8 @@ class AudioListener:
                             self._on_wake_detected(tail_cmd)
                         except TypeError:
                             self._on_wake_detected()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[AudioListener] Ошибка фоновой проверки Wake Word: {e}", file=sys.stderr)
             finally:
                 with self._state_lock:
                     self._is_checking_wake = False
@@ -291,10 +297,10 @@ class AudioListener:
 
     def start_wake_word_loop(
         self,
-        on_wake_detected: Callable[[], None],
-        stt_engine,
+        on_wake_detected: Callable[..., None],
+        stt_engine: SpeechToText | None,
         wake_words: tuple[str, ...] = ("джарвис", "jarvis")
-    ):
+    ) -> None:
         """Включает фоновый анализ аудиопотока на слово «Джарвис»."""
         with self._state_lock:
             self._on_wake_detected = on_wake_detected
@@ -304,7 +310,7 @@ class AudioListener:
         if not self._is_running:
             self.start_stream()
 
-    def stop_wake_word_loop(self):
+    def stop_wake_word_loop(self) -> None:
         """Выключает фоновый поиск ключевого слова и останавливает запись при остановке агента."""
         with self._state_lock:
             self._mode = "idle"

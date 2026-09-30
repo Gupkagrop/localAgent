@@ -9,20 +9,20 @@ import json
 import os
 import re
 import urllib.parse
-from typing import Any, Dict, List, Optional
+from collections.abc import Callable
 
 
 class DecisionEngine:
     """Двухуровневый маршрутизатор команд ассистента."""
 
-    def __init__(self, config_path: Optional[str] = None, models_dir: Optional[str] = None) -> None:
+    def __init__(self, config_path: str | None = None, models_dir: str | None = None) -> None:
         self.project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.commands_path = config_path or os.path.join(self.project_dir, "config", "commands.json")
         self._load_commands_config()
 
     def _load_commands_config(self) -> None:
         """Загружает словарь известных приложений и URL."""
-        self.app_map: Dict[str, str] = {
+        self.app_map: dict[str, str] = {
             "калькулятор": "calc.exe",
             "блокнот": "notepad.exe",
             "проводник": "explorer.exe",
@@ -32,7 +32,7 @@ class DecisionEngine:
             "телеграм": "telegram.exe",
             "настройки": "ms-settings:",
         }
-        self.url_map: Dict[str, str] = {
+        self.url_map: dict[str, str] = {
             "ютуб": "https://www.youtube.com",
             "youtube": "https://www.youtube.com",
             "гитхаб": "https://github.com",
@@ -89,10 +89,11 @@ class DecisionEngine:
         return self.is_llm_available()
 
     def unload_model(self) -> None:
-        """Освобождает ресурсы модели (совместимость интерфейса)."""
-        pass
+        """Сбрасывает кэши конфигураций и освобождает ресурсы роутера."""
+        self._load_commands_config()
+        print("[DecisionEngine] Кэши маршрутизатора сброшены, ресурсы освобождены")
 
-    def download_llm_model(self, progress_callback: Optional[Any] = None) -> bool:
+    def download_llm_model(self, progress_callback: Callable[[int, int, int], None] | None = None) -> bool:
         """Загрузка / проверка наличия весов xlangai/Jedi-3B-1080p в кэше."""
         try:
             from huggingface_hub import snapshot_download
@@ -106,7 +107,7 @@ class DecisionEngine:
             print(f"[DecisionEngine Error loading model] {e}")
             return False
 
-    def parse_command(self, text: str) -> Dict[str, Any]:
+    def parse_command(self, text: str) -> dict[str, object]:
         """
         Основной метод анализа голосовой команды.
         Сначала проверяет мгновенный Fast Path. Если совпадений нет — направляет в VisionAgent.
@@ -129,7 +130,7 @@ class DecisionEngine:
             }
         }
 
-    def _parse_fast_path(self, query: str) -> Optional[Dict[str, Any]]:
+    def _parse_fast_path(self, query: str) -> dict[str, object] | None:
         """
         Мгновенный разбор регулярными выражениями системных команд (0 мс задержки).
         """

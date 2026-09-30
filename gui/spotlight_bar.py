@@ -4,6 +4,7 @@
 """
 import os
 import json
+import sys
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
@@ -232,8 +233,8 @@ class SpotlightBar(QWidget):
                 phrase = f"Открой {url_name}"
                 if phrase.lower() not in [c.lower() for c in commands]:
                     commands.append(phrase)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[SpotlightBar] Ошибка загрузки словаря команд из {cfg_path}: {e}", file=sys.stderr)
 
         return commands
 

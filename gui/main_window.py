@@ -5,9 +5,9 @@
 и панелью контроля видеопамяти (VRAM).
 """
 import os
+import sys
 import json
 import winreg
-from typing import Optional, Union
 
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtWidgets import (
@@ -36,7 +36,7 @@ class MainWindow(QMainWindow):
     download_llm_requested = pyqtSignal()
     check_all_systems_requested = pyqtSignal()
 
-    def __init__(self, config_path: str, parent=None):
+    def __init__(self, config_path: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.config_path = config_path
         self.settings = self._load_settings()
@@ -53,8 +53,8 @@ class MainWindow(QMainWindow):
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     return json.load(f)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[MainWindow] Ошибка чтения конфигурации {self.config_path}: {e}", file=sys.stderr)
         return {
             "autostart_with_windows": False,
             "start_minimized": False,
@@ -612,7 +612,7 @@ class MainWindow(QMainWindow):
                 cur_name = cur_name[:20] + "..."
             self.card_mic.status_label.setText(cur_name)
 
-    def set_llm_status(self, status: Union[str, bool]) -> None:
+    def set_llm_status(self, status: str | bool) -> None:
         """Обновляет визуальный статус Vision-модели в карточке и кнопке управления."""
         if isinstance(status, bool):
             status_key = "ready" if status else "not_installed"

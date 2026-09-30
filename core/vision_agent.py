@@ -14,8 +14,9 @@ import sys
 import time
 import traceback
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from multiprocessing.synchronize import Event as EventType
 from PIL import Image
+from core.screen_tools import POINT
 
 # Системный промпт для Computer-Use в Windows 11
 COMPUTER_USE_SYSTEM_PROMPT = """You are Jarvis, an autonomous Computer-Use AI agent running locally on Windows 11.
@@ -46,11 +47,11 @@ class VisionAction:
     """Структурированное действие модели."""
     thought: str = ""
     action_type: str = "wait"
-    coordinate: Optional[Tuple[int, int]] = None  # [x, y] в диапазоне 0..1000
+    coordinate: tuple[int, int] | None = None  # [x, y] в диапазоне 0..1000
     text: str = ""
     press_enter: bool = False
     key: str = ""
-    keys: List[str] = field(default_factory=list)
+    keys: list[str] = field(default_factory=list)
     direction: str = "down"
     message: str = ""
     raw_response: str = ""
@@ -131,7 +132,7 @@ class ActionParser:
         keys = [str(k).lower().strip() for k in keys_val] if isinstance(keys_val, list) else []
         direction = str(data.get("direction", "down")).lower().strip()
 
-        coord: Optional[Tuple[int, int]] = None
+        coord: tuple[int, int] | None = None
         raw_coord = data.get("coordinate")
         if isinstance(raw_coord, (list, tuple)) and len(raw_coord) >= 2:
             try:
@@ -155,7 +156,7 @@ class ActionParser:
         )
 
     @staticmethod
-    def is_dangerous_hotkey(keys: List[str]) -> bool:
+    def is_dangerous_hotkey(keys: list[str]) -> bool:
         """Проверяет сочетание клавиш на наличие в черном списке деструктивных команд Windows."""
         if not keys:
             return False
@@ -170,12 +171,10 @@ class FailSafeMonitor:
 
     def __init__(self) -> None:
         self.user32 = ctypes.windll.user32
-        self._last_cursor_pos: Optional[Tuple[int, int]] = None
+        self._last_cursor_pos: tuple[int, int] | None = None
 
-    def get_cursor_position(self) -> Tuple[int, int]:
+    def get_cursor_position(self) -> tuple[int, int]:
         """Возвращает текущие экранные координаты курсора мыши."""
-        class POINT(ctypes.Structure):
-            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
         pt = POINT()
         self.user32.GetCursorPos(ctypes.byref(pt))
         return pt.x, pt.y
@@ -184,7 +183,7 @@ class FailSafeMonitor:
         """Запоминает координаты, куда агент сам переместил курсор."""
         self._last_cursor_pos = (x, y)
 
-    def is_interrupted(self) -> Tuple[bool, str]:
+    def is_interrupted(self) -> tuple[bool, str]:
         """
         Проверяет, нажал ли пользователь клавишу ESC или физически дернул мышь.
         """
@@ -207,8 +206,8 @@ def _worker_process_loop(
     task_queue: mp.Queue,
     status_queue: mp.Queue,
     model_name: str,
-    stop_event: Any,
-    cancel_event: Any = None,
+    stop_event: EventType,
+    cancel_event: EventType | None = None,
     fallback_model: str = "Qwen/Qwen2.5-VL-3B-Instruct"
 ) -> None:
     """
@@ -291,8 +290,8 @@ def _worker_process_loop(
 
                 prompt = task.get("prompt", "")
                 max_steps = task.get("max_steps", 8)
-                history: List[str] = []
-                prev_image: Optional[Image.Image] = None
+                history: list[str] = []
+                prev_image: Image.Image | None = None
 
                 status_queue.put({"type": "task_started", "prompt": prompt})
 
@@ -334,8 +333,8 @@ def _worker_process_loop(
                             avg_diff = diff / (64 * 64)
                             if avg_diff < 1.5:  # Среднее изменение яркости пикселей менее 1.5 из 255 (~0.6% от максимума)
                                 screen_changed = False
-                        except Exception:
-                            pass
+                        except Exception as diff_err:
+                            print(f"[VisionWorker] Предупреждение вычисления разницы скриншотов: {diff_err}", file=sys.stderr)
 
                     prev_image = image
 
@@ -487,12 +486,12 @@ def _worker_process_loop(
             os.makedirs(log_dir, exist_ok=True)
             with open(os.path.join(log_dir, "vision_worker.log"), "a", encoding="utf-8") as f:
                 f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Сбой воркера Vision-агента: {e}\n{tb}\n")
-        except Exception:
-            pass
+        except Exception as log_err:
+            print(f"[VisionWorker] Не удалось записать лог сбоя: {log_err}", file=sys.stderr)
         try:
             status_queue.put_nowait({"type": "error", "message": f"Сбой воркера Vision-агента: {e}"})
-        except Exception:
-            pass
+        except Exception as queue_err:
+            print(f"[VisionWorker] Не удалось отправить статус ошибки: {queue_err}", file=sys.stderr)
 
 
 class VisionAgentProcessManager:
@@ -505,14 +504,14 @@ class VisionAgentProcessManager:
     ) -> None:
         self.model_name = model_name
         self.fallback_model = fallback_model
-        self._process: Optional[mp.Process] = None
-        self._task_queue: Optional[mp.Queue] = None
-        self._status_queue: Optional[mp.Queue] = None
-        self._stop_event: Optional[Any] = None
-        self._cancel_event: Optional[Any] = None
+        self._process: mp.Process | None = None
+        self._task_queue: mp.Queue | None = None
+        self._status_queue: mp.Queue | None = None
+        self._stop_event: EventType | None = None
+        self._cancel_event: EventType | None = None
         self._is_ready: bool = False
         self._is_busy: bool = False
-        self._start_time: Optional[float] = None
+        self._start_time: float | None = None
         self._startup_timeout: float = 120.0
 
     def is_running(self) -> bool:
@@ -563,8 +562,8 @@ class VisionAgentProcessManager:
         if self._task_queue is not None:
             try:
                 self._task_queue.put({"type": "stop"}, timeout=0.5)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[VisionAgentManager Stop Error] {e}", file=sys.stderr)
 
         if self._process is not None and self._process.is_alive():
             self._process.join(timeout=4.0)
@@ -586,9 +585,9 @@ class VisionAgentProcessManager:
         if self._cancel_event is not None:
             self._cancel_event.set()
 
-    def poll_status(self) -> List[Dict[str, Any]]:
+    def poll_status(self) -> list[dict[str, str | bool | int | float | None]]:
         """Опрашивает очередь обновлений статуса от рабочего процесса."""
-        events: List[Dict[str, Any]] = []
+        events: list[dict[str, str | bool | int | float | None]] = []
         if self._status_queue is None:
             return events
 
@@ -604,7 +603,10 @@ class VisionAgentProcessManager:
                     if ev_type == "error" and not self._is_ready:
                         self._start_time = None
                 events.append(ev)
-            except Exception:
+            except queue.Empty:
+                break
+            except Exception as e:
+                print(f"[VisionAgentManager Poll Error] {e}", file=sys.stderr)
                 break
 
         # Защитный таймаут ожидания готовности воркера (ARCH-3)

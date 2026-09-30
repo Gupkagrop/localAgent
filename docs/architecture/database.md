@@ -3,26 +3,35 @@
 
 # Схемы данных и хранилище конфигураций
 
-В архитектуре ассистента функции персистентного слоя выполняют локальные JSON-хранилища в каталоге `config/`, системный реестр Windows и кэш моделей Hugging Face Hub.
+В архитектуре ассистента функции персистентного слоя выполняют локальные JSON-хранилища в каталоге `config/`, системный реестр Windows 11 и кэш моделей Hugging Face Hub / Piper TTS.
 
 ---
 
 ## 1. Конфигурация приложения (`config/settings.json`)
 
-Файл хранит пользовательские параметры работы аудиоконтура, порогов VAD, синтезатора речи и ограничений автономного агента.
+Файл хранит пользовательские параметры работы аудиоконтура, автозагрузки, синтезатора речи (TTS), распознавания речи (STT) и ограничений автономного Vision-агента.
 
-### Структура схемы:
+### Актуальная структура схемы:
 ```json
 {
-  "microphone_index": null,        // int | null: Индекс устройства ввода (null = системный по умолчанию)
-  "trigger_word": "Джарвис",       // string: Локальное слово-триггер для Wake Word
-  "energy_threshold": 1000,        // int: Порог RMS энергии для первичной детекции голоса
-  "tts_voice_id": "irina",         // string: Идентификатор установленного голоса SAPI5
-  "tts_rate": 1,                   // int: Скорость синтеза речи (-10 .. +10)
-  "tts_volume": 100,               // int: Громкость синтеза речи (0 .. 100)
-  "chrome_path": "",               // string: Путь к бинарнику Google Chrome (пусто = автопоиск)
-  "vision_max_steps": 8,           // int: Максимальное количество шагов автономного Vision-агента (1..15)
-  "ducking_factor": 0.25           // float: Коэффициент Audio Ducking (приглушение до 25%)
+  "autostart_with_windows": false,                 // bool: Автозагрузка с Windows 11 через реестр HKCU Run
+  "start_minimized": false,                        // bool: Запуск в свернутом виде (в системный трей)
+  "close_behavior": "ask",                         // string: Поведение при закрытии окна ("ask" | "tray" | "exit")
+  "default_activation_mode": "wake_word_and_copilot", // string: Режим активации ("wake_word_and_copilot" | "copilot_only")
+  "wake_word_enabled": true,                       // bool: Включено ли фоновое слово-триггер
+  "wake_word": "джарвис",                          // string: Локальное слово-триггер для Wake Word
+  "audio_ducking_enabled": true,                   // bool: Автоматическое приглушение системного звука Windows
+  "audio_ducking_level": 0.2,                      // float: Уровень приглушения фонового звука (0.0 .. 1.0)
+  "sound_cues_enabled": true,                      // bool: Звуковые сигналы активации/успеха/ошибки
+  "tts_enabled": true,                             // bool: Озвучивание ответов и шагов агента
+  "tts_voice": "piper:ru_RU-dmitri-medium",        // string: Идентификатор активного голоса (Piper ONNX или SAPI5)
+  "tts_speed": 1.0,                                // float: Скорость речи (0.5 .. 2.0)
+  "audio_device_index": 1,                         // int | null: Индекс микрофона (null = системный по умолчанию)
+  "stt_model": "turbo",                            // string: Модель Faster-Whisper ("turbo" | "small" | "base")
+  "confirm_dangerous_actions": true,               // bool: Запрос подтверждения опасных системных действий
+  "vision_max_steps": 8,                           // int: Максимальное количество шагов Vision-агента (1..15)
+  "vision_model": "xlangai/Jedi-3B-1080p",         // string: Модель компьютерного зрения VLM
+  "vision_auto_focus_browser": true                // bool: Автоматический перевод фокуса в окно браузера
 }
 ```
 
@@ -32,24 +41,45 @@
 
 Файл служит базой знаний для мгновенного Fast-Path роутера (`DecisionEngine`) и строки быстрого ввода `SpotlightBar`.
 
-### Категории записей:
-1. **`applications`**: Сопоставление русских имен программ и исполняемых файлов:
-   - Ключ: имя на русском (например, `"блокнот"`, `"проводник"`, `"калькулятор"`).
-   - Значение: имя бинарника (`"notepad.exe"`, `"explorer.exe"`, `"calc.exe"`).
-2. **`web_aliases`**: Сопоставление названий сервисов и целевых URL:
-   - Ключ: имя сервиса (например, `"ютуб"`, `"гугл"`, `"github"`).
-   - Значение: полный URL (`"https://www.youtube.com"`, `"https://github.com"`).
-3. **`system_commands`**: Зарегистрированные системные шорткаты и действия ОС:
-   - Блокировка (`"заблокируй компьютер"` -> Win+L).
-   - Диспетчер задач (`"диспетчер задач"` -> Taskmgr).
-   - Регулировка громкости и мультимедиа.
+### Актуальная структура схемы:
+```json
+{
+  "apps": {
+    "браузер": "chrome.exe",
+    "хром": "chrome.exe",
+    "калькулятор": "calc.exe",
+    "блокнот": "notepad.exe",
+    "проводник": "explorer.exe",
+    "диспетчер задач": "taskmgr.exe",
+    "телеграм": "telegram.exe",
+    "терминал": "wt.exe",
+    "antigravity": "antigravity"
+  },
+  "urls": {
+    "подписки ютуб": "https://www.youtube.com/feed/subscriptions",
+    "тренды ютуб": "https://www.youtube.com/feed/trending",
+    "сообщения вк": "https://vk.com/im",
+    "новости вк": "https://vk.com/feed",
+    "тренды гитхаб": "https://github.com/trending",
+    "ютуб": "https://www.youtube.com",
+    "гитхаб": "https://github.com",
+    "вк": "https://vk.com",
+    "почта": "https://mail.google.com"
+  },
+  "antigravity": {
+    "gui_window_names": ["Antigravity", "antigravity"],
+    "cli_executable": "agy"
+  }
+}
+```
 
 ---
 
 ## 3. Кэширование весов нейросетей на диске
 
-- **Whisper Turbo:** Загружается через движок `faster-whisper` и CTranslate2 в локальный кэш `~/.cache/huggingface/hub/models--Systran--faster-whisper-turbo` (или `HF_HOME`).
+- **Whisper Turbo:** Загружается через движок `faster-whisper` и CTranslate2 в локальный кэш `~/.cache/huggingface/hub/models--Systran--faster-whisper-turbo` (или переменную окружения `HF_HOME`).
 - **Jedi-3B-1080p (4-bit NF4):** Веса кэшируются стандартным механизмом Hugging Face Hub (`snapshot_download(repo_id="xlangai/Jedi-3B-1080p")`).
+- **Piper Neural TTS (`ru_RU-dmitri-medium`):** Веса ONNX (~60.3 МБ) и JSON-конфигурация хранятся локально в `models/tts/`. Инференс выполняется исключительно на CPU через `onnxruntime` (0 МБ оверхеда VRAM).
 
 ---
 

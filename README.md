@@ -7,7 +7,7 @@
 ![NVIDIA CUDA 12.8](https://img.shields.io/badge/NVIDIA%20CUDA-12.8-76B900?style=for-the-badge&logo=nvidia&logoColor=white)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.11-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white)
 ![PyQt6](https://img.shields.io/badge/PyQt6-Fluent%20Dark-41CD52?style=for-the-badge&logo=qt&logoColor=white)
-![Tests](https://img.shields.io/badge/Tests-88%2F88%20PASS-brightgreen?style=for-the-badge)
+![Tests](https://img.shields.io/badge/Tests-142%2F142%20PASS-brightgreen?style=for-the-badge)
 
 **Автономный локальный голосовой ассистент и мультимодальный агент компьютерного управления (Computer-Use Agent) для Windows 11.**
 
@@ -201,7 +201,7 @@ pip install -e .[vision]
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover tests
 ```
-> **Результат:** 88 из 88 тестов успешно пройдены (88/88 PASS, 100%), среднее время выполнения — 1.8 сек.
+> **Результат:** 142 из 142 тестов успешно пройдены (142/142 PASS, 100%), среднее время выполнения — 2.2 сек.
 
 ### 2. Сквозной валидационный аудит (End-to-End System Audit)
 ```powershell

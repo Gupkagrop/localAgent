@@ -3,6 +3,8 @@
 Отвечает за вызовы системных API Windows, управление окнами, громкостью,
 медиаплеером, а также интеграцию с Antigravity CLI и Antigravity 2.0 GUI.
 """
+from __future__ import annotations
+
 import os
 import re
 import json
@@ -12,13 +14,18 @@ import threading
 import ctypes
 import subprocess
 import webbrowser
-from typing import Optional, Callable, Any
+import sys
+from typing import TYPE_CHECKING
+from collections.abc import Callable
 import win32gui
 import win32con
 import win32clipboard
 
 from core.audio_ducking import AudioDucker
 from core.app_controller import DesktopAppController
+
+if TYPE_CHECKING:
+    from core.vision_agent import VisionAgentProcessManager
 
 # Виртуальные коды мультимедиа-клавиш Windows
 VK_MEDIA_NEXT_TRACK = 0xB0
@@ -37,11 +44,11 @@ KEYEVENTF_KEYUP = 0x0002
 class CommandExecutor:
     def __init__(
         self,
-        audio_ducker: Optional[AudioDucker] = None,
-        on_log: Optional[Callable[[str], None]] = None,
-        vision_manager: Optional[Any] = None,
-        settings: Optional[dict] = None
-    ):
+        audio_ducker: AudioDucker | None = None,
+        on_log: Callable[[str], None] | None = None,
+        vision_manager: VisionAgentProcessManager | None = None,
+        settings: dict | None = None
+    ) -> None:
         self.audio_ducker = audio_ducker or AudioDucker()
         self.on_log = on_log
         self.vision_manager = vision_manager
@@ -58,8 +65,8 @@ class CommandExecutor:
             try:
                 with open(config_path, "r", encoding="utf-8") as f:
                     return json.load(f)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[CommandExecutor] Ошибка загрузки settings.json: {e}", file=sys.stderr)
         return {}
 
     def _load_commands_config(self) -> dict:
@@ -68,8 +75,8 @@ class CommandExecutor:
             try:
                 with open(config_path, "r", encoding="utf-8") as f:
                     return json.load(f)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[CommandExecutor] Ошибка загрузки commands.json: {e}", file=sys.stderr)
         return {}
 
     def log(self, message: str) -> None:
@@ -392,7 +399,7 @@ class CommandExecutor:
         except Exception as e:
             return False, f"Ошибка управления окном Antigravity: {e}"
 
-    def _handle_antigravity_cli(self, prompt: str, params: Optional[dict] = None) -> tuple[bool, str]:
+    def _handle_antigravity_cli(self, prompt: str, params: dict | None = None) -> tuple[bool, str]:
         """Запускает Antigravity CLI в Windows Terminal."""
         cli_exe = self.cli_executable
 
@@ -405,8 +412,8 @@ class CommandExecutor:
                         win32clipboard.EmptyClipboard()
                     finally:
                         win32clipboard.CloseClipboard()
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[Executor] Предупреждение при очистке буфера обмена: {e}", file=sys.stderr)
 
                 # Эмулируем Ctrl+C для копирования выделенного текста/ошибки
                 ctypes.windll.user32.keybd_event(VK_CONTROL, 0, 0, 0)

@@ -16,13 +16,11 @@ import sys
 import wave
 import queue
 import threading
-from typing import Optional, Union
-
 # Кэш загруженной модели Piper, чтобы не перезагружать веса при каждом вызове
 _CACHED_PIPER_VOICE = None
 _PIPER_LOCK = threading.Lock()
 
-def get_piper_model_paths() -> tuple[Optional[str], Optional[str]]:
+def get_piper_model_paths() -> tuple[str | None, str | None]:
     """Возвращает пути к файлам ONNX и JSON модели Piper, если они существуют."""
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models", "tts"))
     onnx_path = os.path.join(base_dir, "ru_RU-dmitri-medium.onnx")
@@ -34,11 +32,11 @@ def get_piper_model_paths() -> tuple[Optional[str], Optional[str]]:
 class TextToSpeech:
     """Универсальный класс синтеза речи с поддержкой Piper TTS и SAPI5."""
 
-    def __init__(self, voice_name: Optional[str] = None, speed: Union[float, int] = 1.0):
-        self.voice_name: Optional[str] = voice_name
-        self.speed: Union[float, int] = speed
+    def __init__(self, voice_name: str | None = None, speed: float | int = 1.0) -> None:
+        self.voice_name: str | None = voice_name
+        self.speed: float | int = speed
         self._lock = threading.Lock()
-        self._queue: queue.Queue = queue.Queue()
+        self._queue: queue.Queue[str | None] = queue.Queue()
         self._is_running: bool = True
         self._worker_thread = threading.Thread(target=self._queue_worker, daemon=True)
         self._worker_thread.start()
@@ -50,8 +48,8 @@ class TextToSpeech:
             import pythoncom
             pythoncom.CoInitialize()
             has_com = True
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[TTS] Предупреждение CoInitialize: {e}", file=sys.stderr)
 
         try:
             while self._is_running:
@@ -81,8 +79,8 @@ class TextToSpeech:
                 try:
                     import pythoncom
                     pythoncom.CoUninitialize()
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[TTS] Предупреждение CoUninitialize: {e}", file=sys.stderr)
 
     def stop(self) -> None:
         """Очищает очередь воспроизведения и прерывает текущую речь."""
@@ -95,8 +93,8 @@ class TextToSpeech:
         try:
             import winsound
             winsound.PlaySound(None, winsound.SND_PURGE)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[TTS] Предупреждение при сбросе воспроизведения: {e}", file=sys.stderr)
 
     @staticmethod
     def get_available_voices() -> list[dict]:

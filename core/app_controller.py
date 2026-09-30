@@ -9,7 +9,8 @@ import time
 import threading
 import ctypes
 import subprocess
-from typing import Optional, Callable, Any
+import sys
+from collections.abc import Callable
 import win32gui
 import win32con
 import win32process
@@ -87,24 +88,20 @@ DEFAULT_EXECUTABLES: dict[str, str] = {
 }
 
 
-def launch_antigravity_gui() -> bool:
-    """Безопасный запуск Antigravity IDE (GUI) без shell=True."""
-    try:
-        subprocess.Popen(["cmd.exe", "/c", "start", "", "antigravity"], shell=False)
-        return True
-    except Exception:
-        return False
-
-
 class DesktopAppController:
     """Управляет жизненным циклом и окнами приложений Windows."""
 
     @staticmethod
     def launch_antigravity_gui() -> bool:
         """Безопасный запуск Antigravity IDE (GUI) без shell=True."""
-        return launch_antigravity_gui()
+        try:
+            subprocess.Popen(["cmd.exe", "/c", "start", "", "antigravity"], shell=False)
+            return True
+        except Exception as e:
+            print(f"[DesktopAppController] Ошибка запуска Antigravity IDE: {e}", file=sys.stderr)
+            return False
 
-    def __init__(self, on_log: Optional[Callable[[str], None]] = None):
+    def __init__(self, on_log: Callable[[str], None] | None = None) -> None:
         self.on_log = on_log
         self.attach_interactive_desktop()
 
@@ -125,10 +122,10 @@ class DesktopAppController:
                 h_desk = user32.OpenDesktopW("Default", 0, False, 0x00020000 | 0x01FF)
                 if h_desk:
                     user32.SetThreadDesktop(h_desk)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[DesktopAppController] Не удалось подключиться к WinSta0: {e}", file=sys.stderr)
 
-    def find_window(self, app_name: str) -> Optional[int]:
+    def find_window(self, app_name: str) -> int | None:
         """
         Ищет видимое главное окно приложения по его названию или псевдонимам.
         Возвращает HWND окна или None.
@@ -137,9 +134,9 @@ class DesktopAppController:
         clean_name = app_name.lower().strip()
         search_terms = APP_TITLE_ALIASES.get(clean_name, [clean_name])
 
-        target_hwnd: Optional[int] = None
+        target_hwnd: int | None = None
 
-        def enum_callback(hwnd: int, _: Any) -> bool:
+        def enum_callback(hwnd: int, _: int) -> bool:
             nonlocal target_hwnd
             if not win32gui.IsWindowVisible(hwnd):
                 return True
@@ -155,6 +152,7 @@ class DesktopAppController:
         try:
             win32gui.EnumWindows(enum_callback, None)
         except Exception:
+            # Прерывание EnumWindows при возврате False из callback в pywin32 вызывает исключение
             pass
 
         return target_hwnd
@@ -185,8 +183,8 @@ class DesktopAppController:
                 try:
                     win32process.AttachThreadInput(curr_thread, fore_thread, True)
                     attached = True
-                except Exception:
-                    pass
+                except Exception as attach_err:
+                    print(f"[AppController] Предупреждение AttachThreadInput (attach): {attach_err}", file=sys.stderr)
 
             win32gui.BringWindowToTop(hwnd)
             win32gui.SetForegroundWindow(hwnd)
@@ -194,8 +192,8 @@ class DesktopAppController:
             if attached:
                 try:
                     win32process.AttachThreadInput(curr_thread, fore_thread, False)
-                except Exception:
-                    pass
+                except Exception as detach_err:
+                    print(f"[AppController] Предупреждение AttachThreadInput (detach): {detach_err}", file=sys.stderr)
 
             time.sleep(0.08)
             return True
@@ -209,7 +207,7 @@ class DesktopAppController:
             except Exception:
                 return False
 
-    def launch_or_focus(self, app_name: str, executable: Optional[str] = None) -> tuple[bool, str]:
+    def launch_or_focus(self, app_name: str, executable: str | None = None) -> tuple[bool, str]:
         """
         Интеллектуальный запуск приложения:
         - Если окно уже открыто -> выводит его на передний план (без дублирования процессов).

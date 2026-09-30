@@ -8,7 +8,6 @@ import ctypes
 from ctypes import wintypes
 import time
 from dataclasses import dataclass
-from typing import Optional, Tuple
 from PIL import Image
 
 logger = logging.getLogger("ScreenTools")
@@ -16,11 +15,12 @@ logger = logging.getLogger("ScreenTools")
 # Установка DPI-awareness для корректного разрешения экрана в Windows 10/11
 try:
     ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
-except Exception:
+except Exception as e:
+    logger.debug("Не удалось установить Per-Monitor DPI Aware V2: %s", e)
     try:
         ctypes.windll.user32.SetProcessDPIAware()
-    except Exception:
-        pass
+    except Exception as e2:
+        logger.debug("Не удалось установить DPI Aware: %s", e2)
 
 # Константы Win32 событий мыши
 MOUSEEVENTF_MOVE = 0x0001
@@ -82,6 +82,94 @@ VK_MAP = {
 }
 
 
+# Ctypes Win32 структуры общего назначения
+class POINT(ctypes.Structure):
+    _fields_ = [
+        ("x", ctypes.c_long),
+        ("y", ctypes.c_long),
+    ]
+
+
+class RECT(ctypes.Structure):
+    _fields_ = [
+        ("left", ctypes.c_long),
+        ("top", ctypes.c_long),
+        ("right", ctypes.c_long),
+        ("bottom", ctypes.c_long),
+    ]
+
+
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", RECT),
+        ("rcWork", RECT),
+        ("dwFlags", wintypes.DWORD),
+    ]
+
+
+class BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [
+        ("biSize", wintypes.DWORD),
+        ("biWidth", wintypes.LONG),
+        ("biHeight", wintypes.LONG),
+        ("biPlanes", wintypes.WORD),
+        ("biBitCount", wintypes.WORD),
+        ("biCompression", wintypes.DWORD),
+        ("biSizeImage", wintypes.DWORD),
+        ("biXPelsPerMeter", wintypes.LONG),
+        ("biYPelsPerMeter", wintypes.LONG),
+        ("biClrUsed", wintypes.DWORD),
+        ("biClrImportant", wintypes.DWORD),
+    ]
+
+
+# Win32 SendInput x64 структуры (Microsoft ABI: sizeof(INPUT) == 40 байт)
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", ctypes.c_long),
+        ("dy", ctypes.c_long),
+        ("mouseData", ctypes.c_ulong),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", ctypes.c_ushort),
+        ("wScan", ctypes.c_ushort),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", ctypes.c_ulong),
+        ("wParamL", ctypes.c_ushort),
+        ("wParamH", ctypes.c_ushort),
+    ]
+
+
+class _INPUT_UNION(ctypes.Union):
+    _fields_ = [
+        ("mi", MOUSEINPUT),
+        ("ki", KEYBDINPUT),
+        ("hi", HARDWAREINPUT),
+    ]
+
+
+class INPUT(ctypes.Structure):
+    _anonymous_ = ("u",)
+    _fields_ = [
+        ("type", ctypes.c_ulong),
+        ("u", _INPUT_UNION),
+    ]
+
+
 @dataclass
 class ScreenDimensions:
     """Параметры физического разрешения активного монитора."""
@@ -98,7 +186,7 @@ class ScreenController:
         self.user32 = ctypes.windll.user32
         self.gdi32 = ctypes.windll.gdi32
         self._dimensions = self._get_screen_dimensions()
-        self._current_monitor: Tuple[int, int, int, int] = (
+        self._current_monitor: tuple[int, int, int, int] = (
             self._dimensions.left,
             self._dimensions.top,
             self._dimensions.width,
@@ -114,38 +202,20 @@ class ScreenController:
             hdesk = self.user32.OpenDesktopW("Default", 0, False, 0x10000000)
             if hdesk:
                 self.user32.SetThreadDesktop(hdesk)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Не удалось подключиться к рабочему столу WinSta0\\Default: %s", e)
 
-    def get_active_monitor_rect(self) -> Tuple[int, int, int, int]:
+    def get_active_monitor_rect(self) -> tuple[int, int, int, int]:
         """
         Возвращает (left, top, width, height) монитора, на котором находится
         активное окно приложения или курсор мыши.
         """
-        class RECT(ctypes.Structure):
-            _fields_ = [
-                ("left", ctypes.c_long),
-                ("top", ctypes.c_long),
-                ("right", ctypes.c_long),
-                ("bottom", ctypes.c_long)
-            ]
-
-        class MONITORINFO(ctypes.Structure):
-            _fields_ = [
-                ("cbSize", wintypes.DWORD),
-                ("rcMonitor", RECT),
-                ("rcWork", RECT),
-                ("dwFlags", wintypes.DWORD)
-            ]
-
         hwnd = self.user32.GetForegroundWindow()
         hmon = 0
         if hwnd:
             hmon = self.user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST = 2
 
         if not hmon:
-            class POINT(ctypes.Structure):
-                _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
             pt = POINT()
             self.user32.GetCursorPos(ctypes.byref(pt))
             hmon = self.user32.MonitorFromPoint(pt, 2)
@@ -215,21 +285,6 @@ class ScreenController:
             self.user32.ReleaseDC(hwnd, hdc_screen)
             return self._fallback_capture()
 
-        class BITMAPINFOHEADER(ctypes.Structure):
-            _fields_ = [
-                ("biSize", wintypes.DWORD),
-                ("biWidth", wintypes.LONG),
-                ("biHeight", wintypes.LONG),
-                ("biPlanes", wintypes.WORD),
-                ("biBitCount", wintypes.WORD),
-                ("biCompression", wintypes.DWORD),
-                ("biSizeImage", wintypes.DWORD),
-                ("biXPelsPerMeter", wintypes.LONG),
-                ("biYPelsPerMeter", wintypes.LONG),
-                ("biClrUsed", wintypes.DWORD),
-                ("biClrImportant", wintypes.DWORD),
-            ]
-
         bmi = BITMAPINFOHEADER()
         bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
         bmi.biWidth = width
@@ -286,13 +341,13 @@ class ScreenController:
         try:
             from PIL import ImageGrab
             return ImageGrab.grab()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("PIL ImageGrab screen capture failed: %s", e)
 
         # 3. Заглушка при сбое всех методов захвата
         return Image.new("RGB", (self.screen_width, self.screen_height), color=(30, 30, 30))
 
-    def denormalize_coordinate(self, norm_x: int, norm_y: int) -> Tuple[int, int]:
+    def denormalize_coordinate(self, norm_x: int, norm_y: int) -> tuple[int, int]:
         """
         Преобразует нормализованные координаты Qwen (0..1000) в реальные экранные пиксели.
         Учитывает физическое смещение активного монитора (left, top) в мультимониторных конфигурациях.
@@ -367,22 +422,6 @@ class ScreenController:
 
     def _type_chars_direct(self, text: str) -> None:
         """Посимвольный ввод текста через Unicode SendInput."""
-        class KEYBDINPUT(ctypes.Structure):
-            _fields_ = [
-                ("wVk", ctypes.c_ushort),
-                ("wScan", ctypes.c_ushort),
-                ("dwFlags", ctypes.c_ulong),
-                ("time", ctypes.c_ulong),
-                ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
-            ]
-
-        class INPUT(ctypes.Structure):
-            _fields_ = [
-                ("type", ctypes.c_ulong),
-                ("ki", KEYBDINPUT),
-                ("padding", ctypes.c_ubyte * 8),
-            ]
-
         for char in text:
             inp_down = INPUT()
             inp_down.type = 1
@@ -420,11 +459,12 @@ class ScreenController:
                     try:
                         win32clipboard.OpenClipboard()
                         return True
-                    except Exception:
+                    except Exception as e:
+                        logger.debug("Буфер обмена занят, повтор через %s с: %s", delay, e)
                         time.sleep(delay)
                 return False
 
-            prev_clipboard: Optional[str] = None
+            prev_clipboard: str | None = None
             try:
                 if not _safe_open_clipboard():
                     raise RuntimeError("Буфер обмена Windows заблокирован")
