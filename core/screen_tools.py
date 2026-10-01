@@ -195,6 +195,9 @@ class ScreenController:
 
     def _attach_desktop(self) -> None:
         """Подключает поток к интерактивному рабочему столу WinSta0\\Default."""
+        import os
+        if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
+            return
         try:
             hwinsta = self.user32.OpenWindowStationW("WinSta0", False, 0x10000000)
             if hwinsta:
@@ -272,50 +275,73 @@ class ScreenController:
         if not hdc_screen:
             return self._fallback_capture()
 
-        hdc_mem = self.gdi32.CreateCompatibleDC(hdc_screen)
-        hbm = self.gdi32.CreateCompatibleBitmap(hdc_screen, width, height)
-        old_hbm = self.gdi32.SelectObject(hdc_mem, hbm)
+        hdc_mem = None
+        hbm = None
+        old_hbm = None
+        try:
+            hdc_mem = self.gdi32.CreateCompatibleDC(hdc_screen)
+            if not hdc_mem:
+                return self._fallback_capture()
 
-        ret = self.gdi32.BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, left, top, SRCCOPY)
-        if not ret:
-            # Очистка и переход к фолбеку
-            self.gdi32.SelectObject(hdc_mem, old_hbm)
-            self.gdi32.DeleteObject(hbm)
-            self.gdi32.DeleteDC(hdc_mem)
-            self.user32.ReleaseDC(hwnd, hdc_screen)
+            hbm = self.gdi32.CreateCompatibleBitmap(hdc_screen, width, height)
+            if not hbm:
+                return self._fallback_capture()
+
+            old_hbm = self.gdi32.SelectObject(hdc_mem, hbm)
+
+            ret = self.gdi32.BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, left, top, SRCCOPY)
+            if not ret:
+                return self._fallback_capture()
+
+            bmi = BITMAPINFOHEADER()
+            bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+            bmi.biWidth = width
+            bmi.biHeight = -height  # Отрицательное значение для top-down растра
+            bmi.biPlanes = 1
+            bmi.biBitCount = 32
+            bmi.biCompression = 0
+
+            buffer_size = width * height * 4
+            buf = ctypes.create_string_buffer(buffer_size)
+
+            lines = self.gdi32.GetDIBits(
+                hdc_mem,
+                hbm,
+                0,
+                height,
+                buf,
+                ctypes.byref(bmi),
+                0
+            )
+
+            if lines > 0:
+                return Image.frombuffer("RGBA", (width, height), buf, "raw", "BGRA", 0, 1).convert("RGB")
+
             return self._fallback_capture()
-
-        bmi = BITMAPINFOHEADER()
-        bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-        bmi.biWidth = width
-        bmi.biHeight = -height  # Отрицательное значение для top-down растра
-        bmi.biPlanes = 1
-        bmi.biBitCount = 32
-        bmi.biCompression = 0
-
-        buffer_size = width * height * 4
-        buf = ctypes.create_string_buffer(buffer_size)
-
-        lines = self.gdi32.GetDIBits(
-            hdc_mem,
-            hbm,
-            0,
-            height,
-            buf,
-            ctypes.byref(bmi),
-            0
-        )
-
-        # Очистка дескрипторов GDI
-        self.gdi32.SelectObject(hdc_mem, old_hbm)
-        self.gdi32.DeleteObject(hbm)
-        self.gdi32.DeleteDC(hdc_mem)
-        self.user32.ReleaseDC(hwnd, hdc_screen)
-
-        if lines > 0:
-            return Image.frombuffer("RGBA", (width, height), buf, "raw", "BGRA", 0, 1).convert("RGB")
-
-        return self._fallback_capture()
+        except Exception as e:
+            logger.debug("Исключение в Win32 GDI BitBlt: %s", e)
+            return self._fallback_capture()
+        finally:
+            if hdc_mem and old_hbm:
+                try:
+                    self.gdi32.SelectObject(hdc_mem, old_hbm)
+                except Exception:
+                    pass
+            if hbm:
+                try:
+                    self.gdi32.DeleteObject(hbm)
+                except Exception:
+                    pass
+            if hdc_mem:
+                try:
+                    self.gdi32.DeleteDC(hdc_mem)
+                except Exception:
+                    pass
+            if hdc_screen:
+                try:
+                    self.user32.ReleaseDC(hwnd, hdc_screen)
+                except Exception:
+                    pass
 
     def _fallback_capture(self) -> Image.Image:
         """Резервный захват экрана через mss или ImageGrab."""
@@ -357,6 +383,13 @@ class ScreenController:
         В случае относительных координат (0..1000) денормализует как процент от размера экрана.
         Учитывает физическое смещение активного монитора (left, top) в мультимониторных конфигурациях.
         """
+        try:
+            norm_x = int(float(norm_x))
+            norm_y = int(float(norm_y))
+        except (ValueError, TypeError):
+            norm_x = 0
+            norm_y = 0
+
         left, top, width, height = self._current_monitor
 
         # Если передано разрешение изображения, которое видела модель
@@ -371,8 +404,8 @@ class ScreenController:
 
         safe_x = max(0, min(1000, norm_x))
         safe_y = max(0, min(1000, norm_y))
-        screen_x = left + max(0, min(width - 1, int((safe_x / 1000.0) * width)))
-        screen_y = top + max(0, min(height - 1, int((safe_y / 1000.0) * height)))
+        screen_x = left + max(0, min(width - 1, int(round((safe_x / 1000.0) * width))))
+        screen_y = top + max(0, min(height - 1, int(round((safe_y / 1000.0) * height))))
         return screen_x, screen_y
 
     def move_mouse(self, x: int, y: int) -> None:

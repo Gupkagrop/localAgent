@@ -230,20 +230,25 @@ def test_vision_computer_use_agent():
         cx, cy = screen.denormalize_coordinate(500, 500)
         print(f"  [OK] Денормализация координат [500, 500] -> ({cx}, {cy}) (Центр экрана)")
 
-        # 3. Парсер действий ActionParser
-        action = ActionParser.parse('{"thought": "Клик по кнопке поиска", "action": "click", "coordinate": [120, 450]}')
-        print(f"  [OK] ActionParser JSON -> action={action.action_type}, coord={action.coordinate}, thought='{action.thought}'")
+        # 3. Парсер действий ActionParser (Jedi-3B tool_call + guardrails)
+        tc_raw = '<tool_call>{"name": "computer_use", "arguments": {"thought": "Клик по кнопке", "action": "double_click", "coordinate": [120, 450]}}</tool_call>'
+        action = ActionParser.parse(tc_raw)
+        print(f"  [OK] ActionParser Jedi tool_call -> action={action.action_type}, coord={action.coordinate}, thought='{action.thought}'")
 
-        # 4. Монитор аварийной остановки FailSafe
+        # 4. Проверка защитных Guardrails
+        is_blocked = ActionParser.is_dangerous_hotkey(["shift", "delete"]) and ActionParser.is_dangerous_command_text("format D:")
+        print(f"  [OK] Guardrails безопасности (деструктивные команды и хоткеи блокируются): {is_blocked}")
+
+        # 5. Монитор аварийной остановки FailSafe
         failsafe = FailSafeMonitor()
         print(f"  [OK] Fail-Safe монитор (ESC + смещение мыши): активен, прерывание={failsafe.is_interrupted()[0]}")
 
-        # 5. Менеджер процесса и оверлей клика
+        # 6. Менеджер процесса и оверлей клика
         manager = VisionAgentProcessManager()
         overlay = ClickIndicatorOverlay()
         print(f"  [OK] VisionAgentProcessManager: модель '{manager.model_name}', ClickIndicatorOverlay готов ({overlay.size_px}px)")
 
-        # 6. Архитектурная изоляция PyTorch (torch не должен загружаться в основной процесс)
+        # 7. Архитектурная изоляция PyTorch (torch не должен загружаться в основной процесс)
         if "torch" not in sys.modules:
             print("  [OK] Архитектурная изоляция: PyTorch отсутствует в основном процессе (0 МБ оверхеда VRAM/RAM)")
         else:

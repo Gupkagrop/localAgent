@@ -182,7 +182,7 @@ class TestVisionAgentParser(unittest.TestCase):
     def test_build_computer_use_prompt_dimensions(self) -> None:
         """Проверка динамического формирования системного промпта с точным разрешением входного кадра."""
         prompt = build_computer_use_prompt(1260, 784)
-        self.assertIn("The screen screenshot resolution is 1260x784.", prompt)
+        self.assertIn("The screen screenshot resolution is 1260x784", prompt)
         self.assertIn("x: 0..1260, y: 0..784", prompt)
         self.assertIn('"double_click"', prompt)
         self.assertIn("double_click", prompt)
@@ -207,6 +207,49 @@ class TestVisionAgentParser(unittest.TestCase):
         raw3 = '{"thought": "Запуск программы", "action": "doubleclick", "coordinate": [50, 100]}'
         act3 = ActionParser.parse(raw3)
         self.assertEqual(act3.action_type, "double_click")
+
+    def test_parse_tool_call_jedi_format(self) -> None:
+        """Парсинг нативного ответа Jedi-3B / OSWorld с тегами <tool_call> и вложенным arguments."""
+        raw = """<tool_call>
+{"name": "computer_use", "arguments": {"thought": "Кликаю на иконку Obsidian", "action": "double_click", "coordinate": [38, 920]}}
+</tool_call>"""
+        act = ActionParser.parse(raw)
+        self.assertEqual(act.action_type, "double_click")
+        self.assertEqual(act.coordinate, (38, 920))
+        self.assertIn("Obsidian", act.thought)
+
+    def test_parse_coordinate_aliases_and_formats(self) -> None:
+        """Поддержка различных алиасов координат (point, coordinates, location, x/y)."""
+        # 1. point [x, y]
+        act_point = ActionParser.parse('{"thought": "Клик", "action": "click", "point": [120, 240]}')
+        self.assertEqual(act_point.coordinate, (120, 240))
+
+        # 2. coordinates [x, y]
+        act_coords = ActionParser.parse('{"thought": "Клик", "action": "click", "coordinates": [310, 420]}')
+        self.assertEqual(act_coords.coordinate, (310, 420))
+
+        # 3. location [x, y]
+        act_loc = ActionParser.parse('{"thought": "Клик", "action": "click", "location": [500, 600]}')
+        self.assertEqual(act_loc.coordinate, (500, 600))
+
+        # 4. point как словарь {"x": ..., "y": ...}
+        act_dict = ActionParser.parse('{"thought": "Клик", "action": "click", "point": {"x": 750, "y": 850}}')
+        self.assertEqual(act_dict.coordinate, (750, 850))
+
+        # 5. Прямые x и y
+        act_xy = ActionParser.parse('{"thought": "Клик", "action": "click", "x": 100, "y": 200}')
+        self.assertEqual(act_xy.coordinate, (100, 200))
+
+    def test_parse_terminate_and_mouse_move(self) -> None:
+        """Парсинг действия terminate со статусом success и mouse_move."""
+        raw_term = '<tool_call>{"name": "computer_use", "arguments": {"action": "terminate", "status": "success"}}</tool_call>'
+        act_term = ActionParser.parse(raw_term)
+        self.assertEqual(act_term.action_type, "finish")
+
+        raw_move = '<tool_call>{"name": "computer_use", "arguments": {"action": "mouse_move", "coordinate": [200, 400]}}</tool_call>'
+        act_move = ActionParser.parse(raw_move)
+        self.assertEqual(act_move.action_type, "click")
+        self.assertEqual(act_move.coordinate, (200, 400))
 
 
 class TestFailSafeMonitor(unittest.TestCase):

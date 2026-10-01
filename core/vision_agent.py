@@ -18,33 +18,99 @@ from multiprocessing.synchronize import Event as EventType
 from PIL import Image
 from core.screen_tools import POINT
 
-# Системный промпт для Computer-Use в Windows 11
 def build_computer_use_prompt(width: int = 1920, height: int = 1080) -> str:
-    """Генерирует системный промпт для Computer-Use с точным разрешением входного изображения."""
+    """Генерирует системный промпт для Computer-Use в Windows 11 с точным разрешением входного изображения."""
+    tool_desc = {
+        "name": "computer_use",
+        "description": (
+            f"Use a mouse and keyboard to interact with a Windows 11 computer, and inspect screenshots.\n"
+            f"* The screen screenshot resolution is {width}x{height} pixels.\n"
+            f"* Whenever you intend to click on an element like an icon, button, link, or input field, "
+            f"consult the screenshot to determine the exact (x, y) coordinates of the element center before clicking.\n"
+            f"* If an application icon on the desktop needs to be launched, use 'double_click' on the icon.\n"
+            f"* If an application is on the taskbar, a single 'click' is sufficient.\n"
+            f"* If an application is hard to find on the desktop, press the Windows key ('win'), type the application name, and press Enter to launch it reliably.\n"
+            f"* When the user's goal is accomplished (the application window is open and active, or the request is fulfilled), "
+            f"call action 'finish' or 'terminate' with status='success'.\n"
+            f"* For potentially dangerous actions (deleting files, modifying registry), ask for confirmation."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "thought": {
+                    "type": "string",
+                    "description": "Brief explanation in Russian of what you see and what you will do."
+                },
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "click", "left_click", "double_click", "right_click",
+                        "type", "press", "key", "hotkey", "scroll",
+                        "wait", "ask_confirmation", "finish", "terminate"
+                    ],
+                    "description": "The action to perform."
+                },
+                "coordinate": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": f"[x, y] pixel coordinates on the {width}x{height} image (x: 0..{width}, y: 0..{height}) at the visual center of the target element."
+                },
+                "text": {
+                    "type": "string",
+                    "description": "Text to type for 'type' action."
+                },
+                "press_enter": {
+                    "type": "boolean",
+                    "description": "Whether to press Enter after typing."
+                },
+                "key": {
+                    "type": "string",
+                    "description": "Key name for 'press' or 'key' action (e.g. 'win', 'enter', 'esc', 'tab')."
+                },
+                "keys": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of keys for 'hotkey' action (e.g. ['ctrl', 't'], ['win', 'd'])."
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["down", "up"],
+                    "description": "Scroll direction for 'scroll' action."
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Final summary in Russian for 'finish' or confirmation question for 'ask_confirmation'."
+                }
+            },
+            "required": ["action"]
+        }
+    }
+
+    tool_json = json.dumps(tool_desc, ensure_ascii=False, indent=2)
+
     return f"""You are Jarvis, an autonomous Computer-Use AI agent running locally on Windows 11.
 Your task is to accomplish the user's goal by looking at the desktop screenshot and deciding the next action.
-The screen screenshot resolution is {width}x{height}.
+The screen screenshot resolution is {width}x{height} pixels.
 
-Output your next action in strict JSON format inside a ```json ``` block with these keys:
-- "thought": A brief explanation in Russian of what you see and what you will do.
-- "action": One of ["click", "double_click", "right_click", "type", "press", "hotkey", "scroll", "wait", "ask_confirmation", "finish"]
-- "coordinate": [x, y] pixel coordinates on the {width}x{height} image (x: 0..{width}, y: 0..{height}) to click directly on the center of the target element.
-- "text": string to type (for "type" action).
-- "press_enter": boolean, whether to press Enter after typing.
-- "key": string key name for "press" (e.g. "enter", "esc", "tab", "backspace").
-- "keys": array of keys for "hotkey" (e.g. ["ctrl", "t"], ["win", "d"], ["ctrl", "w"]).
-- "direction": "down" or "up" for "scroll" action.
-- "message": final summary in Russian for "finish" or question for "ask_confirmation".
+# Tools
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{tool_json}
+</tools>
+
+For each action, return a JSON object inside <tool_call></tool_call> tags (or inside ```json ``` code block):
+<tool_call>
+{{"name": "computer_use", "arguments": {{"thought": "...", "action": "click", "coordinate": [x, y]}}}}
+</tool_call>
 
 Rules:
-1. Always look for icons, buttons, search bars, or input fields matching the user request.
-2. If the desired application or file is on the desktop, use "double_click" on its icon to launch it.
-3. If an application is on the taskbar, start menu, or browser, a single "click" is sufficient.
-4. When clicking an icon or button, provide the coordinate [x, y] at the visual center of the element.
-5. If you need to search, first click the search field, then type the query.
-6. If the task is completed (e.g. the window is open and active), return action "finish".
-7. For dangerous actions (deleting files, modifying system registry), return action "ask_confirmation".
+1. Always locate the target icon, button, or search bar on the {width}x{height} screenshot.
+2. Provide the [x, y] pixel coordinates at the exact visual center of the target element.
+3. To open an application from the desktop, use 'double_click' on its icon.
+4. If an icon is obscured or hard to locate, press 'win', type the application name, and press Enter.
+5. When the requested application is opened or the task is finished, return action 'finish' with a Russian message.
 """
+
 
 COMPUTER_USE_SYSTEM_PROMPT = build_computer_use_prompt(1920, 1080)
 
@@ -68,30 +134,50 @@ class ActionParser:
     """Парсер ответов модели в структурированные команды управления."""
 
     @classmethod
+    def _normalize_tool_call_dict(cls, data: dict) -> dict:
+        """Распаковывает параметры из arguments/parameters (формат Jedi/OSWorld/Qwen function calling)."""
+        args = data.get("arguments") or data.get("parameters")
+        if isinstance(args, dict):
+            for k, v in args.items():
+                if k not in data or not data[k]:
+                    data[k] = v
+        return data
+
+    @classmethod
     def _repair_and_parse_json(cls, text: str) -> dict | None:
         """Многоуровневый алгоритм восстановления и парсинга поврежденного JSON от LLM."""
         if not text or not isinstance(text, str):
             return None
 
-        # 1. Попытка прямого разбора сырого текста
+        # 1. Извлечение содержимого блока <tool_call> ... </tool_call> (Jedi-3B / OSWorld / Qwen)
+        tc_match = re.search(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", text, re.DOTALL)
+        if tc_match:
+            try:
+                res = json.loads(tc_match.group(1).strip())
+                if isinstance(res, dict):
+                    return cls._normalize_tool_call_dict(res)
+            except Exception:
+                text = tc_match.group(1)
+
+        # 2. Попытка прямого разбора сырого текста
         try:
             res = json.loads(text.strip())
             if isinstance(res, dict):
-                return res
+                return cls._normalize_tool_call_dict(res)
         except Exception:
             pass
 
-        # 2. Извлечение содержимого блока markdown ```json ... ```
+        # 3. Извлечение содержимого блока markdown ```json ... ```
         md_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
         if md_match:
             try:
                 res = json.loads(md_match.group(1).strip())
                 if isinstance(res, dict):
-                    return res
+                    return cls._normalize_tool_call_dict(res)
             except Exception:
                 text = md_match.group(1)
 
-        # 3. Выделение самого внешнего блока { ... }
+        # 4. Выделение самого внешнего блока { ... }
         first_brace = text.find("{")
         last_brace = text.rfind("}")
         if first_brace == -1:
@@ -103,44 +189,44 @@ class ActionParser:
             # Отрезанный конец (missing closing brace)
             candidate = text[first_brace:].strip() + "}"
 
-        # 4. Попытка разобрать кандидат как есть
+        # 5. Попытка разобрать кандидат как есть
         try:
             res = json.loads(candidate)
             if isinstance(res, dict):
-                return res
+                return cls._normalize_tool_call_dict(res)
         except Exception:
             pass
 
-        # 5. Очистка завершающих запятых перед } или ] (trailing commas)
+        # 6. Очистка завершающих запятых перед } или ] (trailing commas)
         cleaned = re.sub(r",\s*([\}\]])", r"\1", candidate)
         try:
             res = json.loads(cleaned)
             if isinstance(res, dict):
-                return res
+                return cls._normalize_tool_call_dict(res)
         except Exception:
             pass
 
-        # 6. Попытка через ast.literal_eval (если модель выдала одинарные кавычки Python dict)
+        # 7. Попытка через ast.literal_eval (если модель выдала одинарные кавычки Python dict)
         try:
             import ast
             res = ast.literal_eval(cleaned)
             if isinstance(res, dict):
-                return res
+                return cls._normalize_tool_call_dict(res)
         except Exception:
             pass
 
-        # 7. Замена одинарных кавычек вокруг ключей и строковых значений на двойные
+        # 8. Замена одинарных кавычек вокруг ключей и строковых значений на двойные
         try:
             fixed_quotes = re.sub(r"(?<=[\{\s,])'([a-zA-Z0-9_]+)':", r'"\1":', cleaned)
             res = json.loads(fixed_quotes)
             if isinstance(res, dict):
-                return res
+                return cls._normalize_tool_call_dict(res)
         except Exception:
             pass
 
-        # 8. Точечное извлечение полей по регулярным выражениям (regex fallback)
+        # 9. Точечное извлечение полей по регулярным выражениям (regex fallback)
         data: dict = {}
-        for key in ("thought", "action", "text", "key", "direction", "message"):
+        for key in ("thought", "action", "text", "key", "direction", "message", "status"):
             m = re.search(rf'"{key}"\s*:\s*"((?:\\.|[^"\\])*?)"(?=\s*[,}}])', candidate)
             if not m:
                 m = re.search(rf'"{key}"\s*:\s*"(.*?)"(?=\s*,\s*"[a-zA-Z0-9_]+"\s*:|\s*\}})', candidate, re.DOTALL)
@@ -149,7 +235,10 @@ class ActionParser:
             if m:
                 data[key] = m.group(1).replace('\\"', '"').replace("\\'", "'")
 
-        coord_m = re.search(r'["\']coordinate["\']\s*:\s*\[\s*(\d+)\s*,\s*(\d+)\s*\]', candidate)
+        coord_m = re.search(
+            r'["\'](?:coordinate|coordinates|point|location)["\']\s*:\s*\[\s*(\d+)\s*,\s*(\d+)\s*\]',
+            candidate
+        )
         if coord_m:
             data["coordinate"] = [int(coord_m.group(1)), int(coord_m.group(2))]
 
@@ -161,8 +250,8 @@ class ActionParser:
         if keys_m:
             data["keys"] = [k.strip(' "\'') for k in keys_m.group(1).split(",") if k.strip(' "\'')]
 
-        if data.get("action") or data.get("thought") or data.get("coordinate"):
-            return data
+        if data.get("action") or data.get("thought") or data.get("coordinate") or data.get("status"):
+            return cls._normalize_tool_call_dict(data)
 
         return None
 
@@ -192,6 +281,7 @@ class ActionParser:
             "leftclick": "click",
             "left-click": "click",
             "single_click": "click",
+            "mouse_move": "click",
             "rightclick": "right_click",
             "right-click": "right_click",
             "doubleclick": "double_click",
@@ -204,36 +294,64 @@ class ActionParser:
             "completed": "finish",
             "terminate": "finish",
             "exit": "finish",
+            "key": "press",
         }
         action_type = alias_map.get(action_type, action_type)
         message = str(data.get("message", ""))
+        status = str(data.get("status", "")).lower().strip()
+        if status in ("success", "failure") and action_type in ("", "wait", "finish", "terminate"):
+            action_type = "finish"
+            if not message:
+                message = "Задача успешно выполнена" if status == "success" else "Не удалось выполнить задачу"
+
         text = str(data.get("text", ""))
         press_enter = bool(data.get("press_enter", False))
         key = str(data.get("key", "")).lower().strip()
         keys_val = data.get("keys", [])
         keys = [str(k).lower().strip() for k in keys_val] if isinstance(keys_val, list) else []
+        if not key and keys and len(keys) == 1 and action_type == "press":
+            key = keys[0]
+            keys = []
+        elif key and not keys and action_type == "hotkey":
+            keys = [key]
+            key = ""
+
         direction = str(data.get("direction", "down")).lower().strip()
 
         coord: tuple[int, int] | None = None
-        raw_coord = data.get("coordinate")
+        raw_coord = data.get("coordinate") or data.get("coordinates") or data.get("point") or data.get("location")
         if isinstance(raw_coord, (list, tuple)) and len(raw_coord) >= 2:
             try:
-                x = int(raw_coord[0])
-                y = int(raw_coord[1])
+                x = int(float(raw_coord[0]))
+                y = int(float(raw_coord[1]))
+                coord = (x, y)
+            except (ValueError, TypeError):
+                coord = None
+        elif isinstance(raw_coord, dict) and "x" in raw_coord and "y" in raw_coord:
+            try:
+                x = int(float(raw_coord["x"]))
+                y = int(float(raw_coord["y"]))
+                coord = (x, y)
+            except (ValueError, TypeError):
+                coord = None
+        elif "x" in data and "y" in data:
+            try:
+                x = int(float(data["x"]))
+                y = int(float(data["y"]))
                 coord = (x, y)
             except (ValueError, TypeError):
                 coord = None
 
-        # Эвристика восстановления действия при отсутствии поля 'action'
-        if not action_type or action_type == "wait":
+        # Эвристика восстановления действия при отсутствии поля 'action' или общем 'computer_use'
+        if not action_type or action_type in ("wait", "computer_use"):
             if coord is not None:
                 action_type = "click"
             elif text:
                 action_type = "type"
-            elif key:
-                action_type = "press"
             elif keys:
                 action_type = "hotkey"
+            elif key:
+                action_type = "press"
             elif not action_type:
                 action_type = "wait"
 
@@ -484,6 +602,8 @@ def _worker_process_loop(
                 max_steps = task.get("max_steps", 8)
                 history: list[str] = []
                 prev_image: Image.Image | None = None
+                last_click_pos: tuple[int, int] | None = None
+                same_click_count = 0
 
                 status_queue.put({"type": "task_started", "prompt": prompt})
 
@@ -531,10 +651,10 @@ def _worker_process_loop(
 
                     prev_image = image
 
-                    # Оптимизация разрешения: ограничение ширины до 1280px с кратностью 28x28 для патчей ViT.
-                    # Это уменьшает число визуальных токенов с ~2600 до ~1100, ускоряя инференс модели в 2.5-3 раза.
+                    # Разрешение экрана с кратностью 28x28 для патчей ViT (Qwen2.5-VL / Jedi-3B).
+                    # Для 1080p экранов сохраняем нативное качество (1904x1064), а для 1440p/4K масштабируем до 1080p.
                     orig_w, orig_h = image.size
-                    max_w = 1280
+                    max_w = 1920
                     if orig_w > max_w:
                         scale = max_w / orig_w
                         target_w = max(28, (int(orig_w * scale) // 28) * 28)
@@ -647,6 +767,38 @@ def _worker_process_loop(
                         screen_x, screen_y = screen.denormalize_coordinate(
                             norm_x=norm_x, norm_y=norm_y, image_size=(target_w, target_h)
                         )
+
+                        # Anti-loop guard: защита от зацикливания нерезультативных кликов
+                        is_same_click = False
+                        if last_click_pos is not None:
+                            dist = ((screen_x - last_click_pos[0]) ** 2 + (screen_y - last_click_pos[1]) ** 2) ** 0.5
+                            if dist < 25 and not screen_changed:
+                                is_same_click = True
+
+                        if is_same_click:
+                            same_click_count += 1
+                        else:
+                            same_click_count = 0
+                            last_click_pos = (screen_x, screen_y)
+
+                        if same_click_count >= 3:
+                            status_queue.put({
+                                "type": "step_status",
+                                "step": step,
+                                "status": "Прерывание: элемент не реагирует на клики"
+                            })
+                            final_message = (
+                                f"Прерывание зацикливания: клик в точку [{screen_x}, {screen_y}] не дает результата. "
+                                "Попробуйте запустить приложение голосом или через поиск Windows."
+                            )
+                            task_success = False
+                            break
+                        elif same_click_count == 2:
+                            history.append(
+                                f"Внимание: клик в точку [{screen_x}, {screen_y}] выполнен дважды без изменения экрана. "
+                                "Попробуй выполнить двойной клик (double_click) или нажать клавишу 'win' для поиска."
+                            )
+
                         failsafe.update_known_position(screen_x, screen_y)
 
                         status_queue.put({
@@ -890,6 +1042,9 @@ class VisionAgentProcessManager:
         """Отправляет задачу на исполнение рабочему процессу."""
         if not self.is_running() or self._task_queue is None:
             return False
+
+        if self._cancel_event is not None:
+            self._cancel_event.clear()
 
         self._is_busy = True
         self._task_queue.put({
