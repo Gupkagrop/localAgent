@@ -106,9 +106,14 @@ For each action, return a JSON object inside <tool_call></tool_call> tags (or in
 Rules:
 1. Always locate the target icon, button, or search bar on the {width}x{height} screenshot.
 2. Provide the [x, y] pixel coordinates at the exact visual center of the target element.
-3. To open an application from the desktop, use 'double_click' on its icon.
+3. To open an application from the desktop or taskbar, use 'double_click' or 'click' on its icon.
 4. If an icon is obscured or hard to locate, press 'win', type the application name, and press Enter.
-5. When the requested application is opened or the task is finished, return action 'finish' with a Russian message.
+5. Searching for content on YouTube, web browsers, or apps:
+   - When asked to find, open, or play specific content (e.g. video, song, channel, article, product):
+     DO NOT click random recommended videos, avatars, sidebars, or scroll endlessly.
+     The FIRST action MUST BE to click the Search input box (on YouTube: the central search box at the top labeled 'Поиск' / 'Search'), type the query, and press Enter (press_enter: true).
+   - Alternatively, you can use hotkey ['ctrl', 'l'] to focus the browser address bar and navigate directly.
+6. When the requested content is playing or the task is finished, return action 'finish' with a Russian message.
 """
 
 
@@ -665,14 +670,15 @@ def _worker_process_loop(
 
                     prev_image = image
 
-                    # Разрешение экрана с кратностью 28x28 для патчей ViT (Qwen2.5-VL / Jedi-3B).
-                    # Для 1080p экранов сохраняем нативное качество (1904x1064), а для 1440p/4K масштабируем до 1080p.
+                    # Оптимальное разрешение для ViT-патчей 28x28 (Qwen2.5-VL / Jedi-3B).
+                    # Масштабирование к max_w = 1008 обеспечивает баланс: ~700-800 токенов
+                    # и ускорение инференса до ~3-4 сек (вместо 15-20 сек при 1920px), сохраняя высокую четкость UI.
                     orig_w, orig_h = image.size
-                    max_w = 1920
+                    max_w = 1008
                     if orig_w > max_w:
-                        scale = max_w / orig_w
-                        target_w = max(28, (int(orig_w * scale) // 28) * 28)
-                        target_h = max(28, (int(orig_h * scale) // 28) * 28)
+                        scale = max_w / float(orig_w)
+                        target_w = max(28, (int(round(orig_w * scale)) // 28) * 28)
+                        target_h = max(28, (int(round(orig_h * scale)) // 28) * 28)
                     else:
                         target_w = max(28, (orig_w // 28) * 28)
                         target_h = max(28, (orig_h // 28) * 28)
@@ -689,6 +695,12 @@ def _worker_process_loop(
                         user_content += f"Предыдущие выполненные действия:\n{history_str}\n"
                     if not screen_changed and step > 1:
                         user_content += "Внимание: после предыдущего шага экран не изменился. Элемент мог не сработать или быть перекрыт всплывающим окном/баннером. Закрой помеху или повтори действие точнее.\n"
+
+                    # Интеллектуальная подсказка для поиска контента на веб-страницах и в медиа
+                    prompt_lower = prompt.lower()
+                    if step == 1 and any(w in prompt_lower for w in ["ютуб", "youtube", "видео", "ролик", "найди", "включи", "поищи", "песн", "клип", "музык", "фильм", "мармук"]):
+                        user_content += "Инструкция: если на экране открыт сайт или сервис (например YouTube), нажми на строку поиска вверху ('Поиск'), чтобы ввести название нужного видео или контента.\n"
+
                     user_content += "Определи следующее действие в формате JSON."
 
                     messages = [

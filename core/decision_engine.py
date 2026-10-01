@@ -287,33 +287,63 @@ class DecisionEngine:
                 "parameters": {"query": search_query}
             }
 
-        # 8b. Прямое воспроизведение видео / музыки на YouTube
-        play_video_match = re.search(
-            r"^(?:включи|поставь|запусти)\s+(?:видео|ролик|клип|песню|трек|музыку|на ютубе|в ютубе)\s+(.+)",
-            q
-        )
-        if play_video_match:
-            video_query = play_video_match.group(1).strip()
-            video_query = re.sub(r"^(?:на\s+ютубе|в\s+ютубе|на\s+youtube|в\s+youtube)\s+", "", video_query).strip()
-            return {
-                "action": "open_url",
-                "target": "https://www.youtube.com",
-                "parameters": {
-                    "query": video_query,
-                    "direct_play": True,
-                    "sort_by_date": False
-                }
-            }
+        # 8b. Прямое воспроизведение и поиск видео / музыки на YouTube
+        sort_by_date = bool(re.search(r"\b(?:последн(?:ее|ий|яя|ие|их)|свеж(?:ее|ий|ая|ие|их)|нов(?:ое|ый|ая|ые|ых))\b", q))
 
-        # 8c. Поиск на YouTube
-        yt_search_match = re.search(r"^(?:найди|поищи)\s+(?:на\s+ютубе|в\s+ютубе|на\s+youtube|в\s+youtube)\s+(.+)", q)
-        if yt_search_match:
-            yt_query = yt_search_match.group(1).strip()
-            return {
-                "action": "open_url",
-                "target": f"https://www.youtube.com/results?search_query={urllib.parse.quote(yt_query)}",
-                "parameters": {"query": yt_query}
-            }
+        # Если запрашивается сложная мультимодальная инструкция поиска последнего/нового ролика — направляем в VisionAgent
+        has_latest_video = bool(re.search(r"\b(?:последн(?:ее|ий|яя|ие|их)|свеж(?:ее|ий|ая|ие|их)|нов(?:ое|ый|ая|ые|ых))\s+(?:видео|ролик|клип|запись)", q))
+        if has_latest_video:
+            return None
+
+        yt_patterns = [
+            # "открой ютуб и включи/найди <запрос>"
+            (r"^(?:открой|перейди на|зайди на)\s+(?:ютуб|youtube)\s+и\s+(?:включи|поставь|запусти|найди|поищи)\s+(.+)", False),
+            # "найди на ютубе и включи <запрос>"
+            (r"^(?:найди|поищи)\s+(?:на\s+ютубе|в\s+ютубе|на\s+youtube|в\s+youtube)\s+и\s+(?:включи|поставь|запусти)\s+(.+)", False),
+            # "включи/поставь/запусти на ютубе <запрос>"
+            (r"^(?:включи|поставь|запусти|воспроизведи|сыграй)\s+(?:на\s+ютубе|в\s+ютубе|на\s+youtube|в\s+youtube)\s+(.+)", False),
+            # "включи/поставь/запусти <запрос> на ютубе"
+            (r"^(?:включи|поставь|запусти|воспроизведи|сыграй)\s+(.+?)\s+(?:на\s+ютубе|в\s+ютубе|на\s+youtube|в\s+youtube)$", False),
+            # "включи/поставь/запусти [видео/ролик/клип/песню/трек/музыку] <запрос>"
+            (r"^(?:включи|поставь|запусти|воспроизведи|сыграй)\s+(?:видео|ролик|клип|песню|трек|музыку|запись|стрим)\s+(.+)", False),
+            # "найди на ютубе <запрос>"
+            (r"^(?:найди|поищи)\s+(?:на\s+ютубе|в\s+ютубе|на\s+youtube|в\s+youtube)\s+(.+)", True),
+        ]
+
+        for yt_pat, is_search_only in yt_patterns:
+            m = re.search(yt_pat, q)
+            if m:
+                raw_target = m.group(1).strip()
+                clean_target = re.sub(r"\b(?:на\s+ютубе|в\s+ютубе|на\s+youtube|в\s+youtube)\b", "", raw_target).strip()
+                clean_target = re.sub(r"\b(?:последн(?:ее|ий|яя|ие|их)|свеж(?:ее|ий|ая|ие|их)|нов(?:ое|ый|ая|ые|ых))\b", "", clean_target).strip()
+                clean_target = re.sub(r"\b(?:видео|ролик|клип|песню|трек|музыку|запись|стрим)\b", "", clean_target).strip()
+                clean_target = re.sub(r"\s+", " ", clean_target).strip()
+
+                if clean_target:
+                    # Если это системное приложение без упоминания YouTube/музыки, передаем дальше в app_map
+                    if clean_target in self.app_map and not any(k in q for k in ["ютуб", "youtube", "видео", "ролик", "клип", "песн", "трек", "музык"]):
+                        return {
+                            "action": "launch_app",
+                            "target": self.app_map[clean_target],
+                            "parameters": {"app_name": clean_target}
+                        }
+
+                    if is_search_only and not sort_by_date:
+                        return {
+                            "action": "open_url",
+                            "target": f"https://www.youtube.com/results?search_query={urllib.parse.quote(clean_target)}",
+                            "parameters": {"query": clean_target}
+                        }
+                    else:
+                        return {
+                            "action": "open_url",
+                            "target": "https://www.youtube.com",
+                            "parameters": {
+                                "query": clean_target,
+                                "direct_play": True,
+                                "sort_by_date": sort_by_date
+                            }
+                        }
 
         # 9. Быстрые ссылки на популярные разделы сайтов и составные URL
         # Проверяем многословные ключи из конфигурации (от самых длинных к коротким)
@@ -371,6 +401,17 @@ class DecisionEngine:
                     "action": "launch_app",
                     "target": self.app_map[app_key],
                     "parameters": {"app_name": app_key}
+                }
+            # Если сказано "включи/поставь X", и это не системное приложение — включаем на YouTube
+            if any(v in q for v in ["включи", "поставь"]):
+                return {
+                    "action": "open_url",
+                    "target": "https://www.youtube.com",
+                    "parameters": {
+                        "query": app_key,
+                        "direct_play": True,
+                        "sort_by_date": sort_by_date
+                    }
                 }
 
         return None

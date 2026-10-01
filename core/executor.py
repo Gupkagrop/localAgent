@@ -587,8 +587,9 @@ class CommandExecutor:
             }
         )
         try:
-            with urllib.request.urlopen(req, timeout=3.5) as resp:
-                data = resp.read(262144).decode("utf-8", errors="ignore")
+            with urllib.request.urlopen(req, timeout=4.5) as resp:
+                # Читаем до 2.5 МБ для гарантированного захвата блока initialData с videoId
+                data = resp.read(2621440).decode("utf-8", errors="ignore")
                 ids = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"', data)
                 if ids:
                     unique_ids = list(dict.fromkeys(ids))

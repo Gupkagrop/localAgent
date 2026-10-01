@@ -5,6 +5,7 @@
 """
 import os
 import json
+import urllib.parse
 import unittest
 
 from core.decision_engine import DecisionEngine
@@ -111,6 +112,20 @@ class TestDecisionEngine(unittest.TestCase):
         res = self.engine.parse_command("Включи последнее видео мармука")
         self.assertEqual(res["action"], "vision_agent")
         self.assertIn("мармук", res["parameters"]["prompt"])
+
+    def test_youtube_direct_play_lofi(self):
+        # Быстрое воспроизведение музыки через Fast-Path
+        res = self.engine.parse_command("Включи музыку lofi")
+        self.assertEqual(res["action"], "open_url")
+        self.assertTrue(res["parameters"].get("direct_play"))
+        self.assertEqual(res["parameters"].get("query"), "lofi")
+
+    def test_youtube_search_query(self):
+        # Поиск на YouTube через Fast-Path
+        res = self.engine.parse_command("Найди на ютубе мармука")
+        self.assertEqual(res["action"], "open_url")
+        self.assertIn("search_query", res["target"])
+        self.assertIn("мармука", urllib.parse.unquote(res["target"]))
 
     def test_subpage_vk_messages(self):
         # Проверка открытия страницы сообщений ВК
@@ -699,6 +714,20 @@ class TestRegressionsAndProblemFixes(unittest.TestCase):
         yt_history = self.engine.parse_command("Открой история ютуб")
         self.assertEqual(yt_history["action"], "open_url")
         self.assertEqual(yt_history["target"], "https://www.youtube.com/feed/history")
+
+    def test_resolve_youtube_video_with_large_buffer(self):
+        """Проверка извлечения videoId из объемного ответа YouTube (>262 KB)."""
+        from unittest.mock import patch, MagicMock
+        fake_html = b" " * 300000 + b'"videoId":"TEST_VID_01"' + b" " * 1000
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = fake_html
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = False
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            url = self.executor._resolve_youtube_video("Мармук", sort_by_date=True)
+            self.assertEqual(url, "https://www.youtube.com/watch?v=TEST_VID_01")
+
 
 
 class TestVisualFeedbackAndScreenGlow(unittest.TestCase):
