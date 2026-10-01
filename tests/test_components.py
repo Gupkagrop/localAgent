@@ -233,10 +233,12 @@ class TestCoreModules(unittest.TestCase):
 
         executor = CommandExecutor(vision_manager=mock_vm)
         cmd = {"action": "vision_agent", "parameters": {"prompt": "На ютубе найди Мармука"}}
-        ok, msg = executor.execute(cmd)
-        self.assertTrue(ok)
-        self.assertEqual(msg, "Анализирую экран...")
-        mock_vm.execute_task.assert_called_once_with("На ютубе найди Мармука", max_steps=8)
+        from unittest.mock import patch
+        with patch.object(executor.app_controller, "launch_or_focus"):
+            ok, msg = executor.execute(cmd)
+            self.assertTrue(ok)
+            self.assertEqual(msg, "Анализирую экран...")
+            mock_vm.execute_task.assert_called_once_with("На ютубе найди Мармука", max_steps=8)
 
     def test_audio_ducker_init(self):
         ducker = AudioDucker()
@@ -389,11 +391,13 @@ class TestCoreModules(unittest.TestCase):
         import unittest.mock as mock
         with mock.patch.object(ctrl, "find_window", side_effect=[None, 12345]):
             with mock.patch.object(ctrl, "focus_window", return_value=True):
-                with mock.patch("os.startfile") as mock_start:
+                with mock.patch("core.app_controller.os.startfile") as mock_start:
                     ok, msg = ctrl.launch_or_focus("блокнот", "notepad.exe")
                     self.assertTrue(ok)
                     self.assertIn("Запущено", msg)
-                    mock_start.assert_called_once_with("notepad.exe")
+                    mock_start.assert_called_once()
+                    called_exe = mock_start.call_args[0][0]
+                    self.assertTrue(called_exe.lower().endswith("notepad.exe"))
 
     def test_executor_window_control_execution(self):
         executor = CommandExecutor()
@@ -782,27 +786,32 @@ class TestVisualFeedbackAndScreenGlow(unittest.TestCase):
         """Проверка работы единой шины состояний AppCoordinator.emit_ui_state."""
         from main import AppCoordinator
         from unittest.mock import patch, MagicMock
-        with patch("main.MainWindow"), patch("main.AudioListener"), patch("main.CopilotKeyHook"), patch("main.VisionAgentProcessManager"):
+        with patch("main.MainWindow"), patch("main.AudioListener"), patch("main.CopilotKeyHook"), \
+             patch("main.VisionAgentProcessManager"), patch("main.create_desktop_shortcut"):
             coord = AppCoordinator(is_minimized=True)
-            # Тест перевода в режим listening
-            coord.emit_ui_state("listening")
-            self.assertEqual(coord.pill._mode, "listening")
+            try:
+                # Тест перевода в режим listening
+                coord.emit_ui_state("listening")
+                self.assertEqual(coord.pill._mode, "listening")
 
-            # Тест передачи текста
-            coord.emit_ui_state("text", "Тестовая фраза")
-            self.assertEqual(coord.pill.label.text(), "Тестовая фраза")
+                # Тест передачи текста
+                coord.emit_ui_state("text", "Тестовая фраза")
+                self.assertEqual(coord.pill.label.text(), "Тестовая фраза")
 
-            # Тест выполнения
-            coord.emit_ui_state("executing", "Действие готово")
-            self.assertEqual(coord.pill._mode, "executing")
+                # Тест выполнения
+                coord.emit_ui_state("executing", "Действие готово")
+                self.assertEqual(coord.pill._mode, "executing")
 
-            # Тест подсветки экрана
-            coord.emit_ui_state("glow_start", "ТЕСТ ПОДСВЕТКИ")
-            self.assertTrue(coord.screen_glow.is_active())
-            self.assertEqual(coord.screen_glow._status_text, "ТЕСТ ПОДСВЕТКИ")
+                # Тест подсветки экрана
+                coord.emit_ui_state("glow_start", "ТЕСТ ПОДСВЕТКИ")
+                self.assertTrue(coord.screen_glow.is_active())
+                self.assertEqual(coord.screen_glow._status_text, "ТЕСТ ПОДСВЕТКИ")
 
-            coord.emit_ui_state("glow_stop")
-            self.assertFalse(coord.screen_glow.is_active())
+                coord.emit_ui_state("glow_stop")
+                self.assertFalse(coord.screen_glow.is_active())
+            finally:
+                coord._vision_timer.stop()
+                coord.screen_glow.stop_glow()
 
 
 class TestAutostart(unittest.TestCase):
@@ -1003,39 +1012,55 @@ class TestTextToSpeech(unittest.TestCase):
             self.assertFalse(any("piper" in v["id"].lower() for v in voices_no_piper))
 
     def test_speed_scaling_to_length_scale(self):
-        """Проверка конвертации параметра скорости speed в length_scale Piper."""
+        """Проверка реальной конвертации параметра скорости speed в length_scale в методе _speak_piper."""
         from core.text_to_speech import TextToSpeech
         from unittest.mock import patch, MagicMock
 
-        mock_voice = MagicMock()
-        mock_wav_file = MagicMock()
+        def fake_synthesize(text, wav_out, syn_config=None):
+            wav_out.setnchannels(1)
+            wav_out.setsampwidth(2)
+            wav_out.setframerate(22050)
+            wav_out.writeframes(b"\x00\x00" * 100)
 
-        # Тест для целого числа: speed=0 -> speed_factor=1.0 -> length_scale=1.0
+        # Тест для целого числа: speed=0 -> length_scale=1.0
         tts_int_0 = TextToSpeech(speed=0)
-        with patch.object(tts_int_0, "_get_piper_voice", return_value=mock_voice), \
-             patch("wave.open"), patch("winsound.PlaySound"):
-            # Проверяем математику конвертации
-            speed_factor = 1.0 + (tts_int_0.speed / 10.0)
-            length_scale = 1.0 / max(0.5, min(2.5, speed_factor))
-            self.assertEqual(length_scale, 1.0)
+        mock_voice_0 = MagicMock()
+        mock_voice_0.synthesize_wav.side_effect = fake_synthesize
+        with patch.object(tts_int_0, "_get_piper_voice", return_value=mock_voice_0), \
+             patch("winsound.PlaySound"):
+            res = tts_int_0._speak_piper("Тест")
+            self.assertTrue(res)
+            mock_voice_0.synthesize_wav.assert_called_once()
+            _, kwargs = mock_voice_0.synthesize_wav.call_args
+            syn_cfg = kwargs.get("syn_config")
+            self.assertIsNotNone(syn_cfg)
+            self.assertEqual(syn_cfg.length_scale, 1.0)
 
-        # speed=5 -> speed_factor=1.5 -> length_scale=1/1.5 (~0.666)
+        # Тест speed=5 -> speed_factor=1.5 -> length_scale=1/1.5
         tts_int_5 = TextToSpeech(speed=5)
-        speed_factor = 1.0 + (tts_int_5.speed / 10.0)
-        length_scale = 1.0 / max(0.5, min(2.5, speed_factor))
-        self.assertAlmostEqual(length_scale, 1.0 / 1.5)
+        mock_voice_5 = MagicMock()
+        mock_voice_5.synthesize_wav.side_effect = fake_synthesize
+        with patch.object(tts_int_5, "_get_piper_voice", return_value=mock_voice_5), \
+             patch("winsound.PlaySound"):
+            res = tts_int_5._speak_piper("Тест")
+            self.assertTrue(res)
+            mock_voice_5.synthesize_wav.assert_called_once()
+            _, kwargs = mock_voice_5.synthesize_wav.call_args
+            syn_cfg = kwargs.get("syn_config")
+            self.assertAlmostEqual(syn_cfg.length_scale, 1.0 / 1.5)
 
-        # speed=-5 -> speed_factor=0.5 -> length_scale=2.0
+        # Тест speed=-5 -> speed_factor=0.5 -> length_scale=2.0
         tts_int_m5 = TextToSpeech(speed=-5)
-        speed_factor = 1.0 + (tts_int_m5.speed / 10.0)
-        length_scale = 1.0 / max(0.5, min(2.5, speed_factor))
-        self.assertAlmostEqual(length_scale, 2.0)
-
-        # float speed=3.0 -> clamped to 2.5 -> length_scale=0.4
-        tts_float = TextToSpeech(speed=3.0)
-        speed_factor = max(0.5, min(2.5, float(tts_float.speed)))
-        self.assertEqual(speed_factor, 2.5)
-        self.assertEqual(1.0 / speed_factor, 0.4)
+        mock_voice_m5 = MagicMock()
+        mock_voice_m5.synthesize_wav.side_effect = fake_synthesize
+        with patch.object(tts_int_m5, "_get_piper_voice", return_value=mock_voice_m5), \
+             patch("winsound.PlaySound"):
+            res = tts_int_m5._speak_piper("Тест")
+            self.assertTrue(res)
+            mock_voice_m5.synthesize_wav.assert_called_once()
+            _, kwargs = mock_voice_m5.synthesize_wav.call_args
+            syn_cfg = kwargs.get("syn_config")
+            self.assertAlmostEqual(syn_cfg.length_scale, 2.0)
 
     def test_speak_empty_or_whitespace_noop(self):
         """Проверка игнорирования пустых строк и пробелов при синтезе."""

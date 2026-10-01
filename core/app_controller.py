@@ -91,6 +91,12 @@ DEFAULT_EXECUTABLES: dict[str, str] = {
     "antigravity": "antigravity"
 }
 
+BLOCKED_EXECUTABLE_EXTENSIONS: set[str] = {
+    ".bat", ".cmd", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh",
+    ".ps1", ".ps1xml", ".ps2", ".ps2xml", ".psc1", ".psc2",
+    ".reg", ".scr", ".com", ".pif", ".hta", ".cpl", ".msc", ".jar"
+}
+
 
 class DesktopAppController:
     """Управляет жизненным циклом и окнами приложений Windows."""
@@ -117,7 +123,9 @@ class DesktopAppController:
 
     @staticmethod
     def attach_interactive_desktop() -> None:
-        """Подключает текущий поток к интерактивной оконной станции WinSta0 для гарантированного поиска окон."""
+        """Подключает текущий поток к интерактивной оконной станции WinSta0 при необходимости."""
+        if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
+            return
         try:
             user32 = ctypes.windll.user32
             h_winsta = user32.OpenWindowStationW("WinSta0", False, 0x00020000 | 0x037F)
@@ -227,8 +235,9 @@ class DesktopAppController:
             return target_exe
 
         # 2. Если файл находится в системном PATH
-        if shutil.which(target_exe):
-            return target_exe
+        which_path = shutil.which(target_exe)
+        if which_path:
+            return which_path
 
         base_stem = os.path.splitext(os.path.basename(target_exe))[0].lower()
         search_names = {base_stem}
@@ -260,12 +269,16 @@ class DesktopAppController:
                     pass
 
         # 4. Поиск в ярлыках Рабочего стола и Меню «Пуск»
+        onedrive_desktop = os.path.expanduser(r"~\OneDrive\Desktop")
         shortcut_dirs = [
             os.environ.get("PUBLIC", r"C:\Users\Public") + r"\Desktop",
             os.path.expanduser(r"~\Desktop"),
             os.path.expandvars(r"%APPDATA%\Microsoft\Windows\Start Menu\Programs"),
             os.path.expandvars(r"%ProgramData%\Microsoft\Windows\Start Menu\Programs"),
         ]
+        if os.path.isdir(onedrive_desktop):
+            shortcut_dirs.insert(2, onedrive_desktop)
+
         for sdir in shortcut_dirs:
             if not os.path.isdir(sdir):
                 continue
@@ -298,7 +311,19 @@ class DesktopAppController:
 
         # Запуск приложения
         target_exe = executable or DEFAULT_EXECUTABLES.get(clean_name, f"{clean_name}.exe")
+
+        orig_ext = os.path.splitext(target_exe)[1].lower()
+        if orig_ext in BLOCKED_EXECUTABLE_EXTENSIONS:
+            self.log(f"Запуск файла с расширением '{orig_ext}' заблокирован политикой безопасности: {target_exe}")
+            return False, f"Запуск файлов {orig_ext} заблокирован"
+
         resolved_exe = self.resolve_executable_or_shortcut(target_exe, clean_name)
+
+        ext = os.path.splitext(resolved_exe)[1].lower()
+        if ext in BLOCKED_EXECUTABLE_EXTENSIONS:
+            self.log(f"Запуск файла с расширением '{ext}' заблокирован политикой безопасности: {resolved_exe}")
+            return False, f"Запуск файлов {ext} заблокирован"
+
         try:
             if resolved_exe.lower() == "antigravity":
                 if not self.launch_antigravity_gui():

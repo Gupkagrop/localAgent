@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import time
 import re
+import queue
 import threading
 import sys
 from typing import TYPE_CHECKING, Callable
@@ -23,6 +24,13 @@ SAMPLE_RATE = 16000
 CHUNK_SIZE = 512  # 32 мс при 16 кГц
 
 class AudioListener:
+    @staticmethod
+    def calculate_rms(chunk: np.ndarray) -> float:
+        """Вычисляет среднеквадратическую энергию (RMS) аудиофрагмента."""
+        if chunk is None or len(chunk) == 0:
+            return 0.0
+        return float(np.sqrt(np.mean(chunk**2)))
+
     def __init__(
         self,
         device_index: int | None = None,
@@ -53,13 +61,15 @@ class AudioListener:
         self.speech_energy_threshold = 0.002
         self.silence_threshold_ms = 400
 
-        # Буфер для фонового Wake Word
+        # Буфер для фонового Wake Word и выделенный рабочий поток
         self.wake_word_enabled = True
         self._wake_buffer: list[np.ndarray] = []
         self._wake_pre_buffer: list[np.ndarray] = []
         self._wake_speech_active = False
         self._wake_silence_start: float | None = None
         self._is_checking_wake = False
+        self._wake_queue: queue.Queue[np.ndarray | None] = queue.Queue(maxsize=2)
+        self._wake_worker_thread: threading.Thread | None = None
 
     @staticmethod
     def get_input_devices() -> list[dict]:
@@ -88,11 +98,18 @@ class AudioListener:
         self._stream_thread.start()
 
     def stop_stream(self):
-        """Останавливает аудиопоток."""
+        """Останавливает аудиопоток и фоновый воркер Wake Word."""
         self._is_running = False
         if self._stream_thread:
             self._stream_thread.join(timeout=1.0)
             self._stream_thread = None
+        if self._wake_worker_thread:
+            try:
+                self._wake_queue.put_nowait(None)
+            except Exception:
+                pass
+            self._wake_worker_thread.join(timeout=1.0)
+            self._wake_worker_thread = None
 
     def _run_loop(self):
         """Единый цикл чтения из звуковой карты с непрерывным VU-метром."""
@@ -111,7 +128,7 @@ class AudioListener:
                     chunk = data.flatten()
 
                     # 1. Расчет RMS и дросселированное обновление VU-метра в UI (макс 12.5 Гц)
-                    rms = float(np.sqrt(np.mean(chunk**2)))
+                    rms = self.calculate_rms(chunk)
                     if self.on_vu_meter:
                         now = time.time()
                         level = min(1.0, rms * 12.0)
@@ -165,98 +182,127 @@ class AudioListener:
         if not self.wake_word_enabled:
             return
 
-        now = time.time()
-        is_speech = rms > self.speech_energy_threshold
-
-        # Сохраняем короткий кольцевой буфер до начала речи (чтобы не срезать первый согласный звук)
-        if not self._wake_speech_active:
-            self._wake_pre_buffer.append(chunk)
-            if len(self._wake_pre_buffer) > int(SAMPLE_RATE * 0.15 / CHUNK_SIZE):
-                self._wake_pre_buffer.pop(0)
-
-        if is_speech:
-            if not self._wake_speech_active:
-                self._wake_speech_active = True
-                self._wake_buffer.extend(self._wake_pre_buffer)
-                self._wake_pre_buffer.clear()
-            self._wake_silence_start = None
-            self._wake_buffer.append(chunk)
-            # Ограничиваем буфер фразы до 3.5 секунд (чтобы вместить фразу целиком)
-            if len(self._wake_buffer) > int(SAMPLE_RATE * 3.5 / CHUNK_SIZE):
-                self._wake_buffer.pop(0)
-        else:
-            if self._wake_speech_active:
-                self._wake_buffer.append(chunk)
-                if self._wake_silence_start is None:
-                    self._wake_silence_start = now
-                elif (now - self._wake_silence_start) * 1000 > 320:
-                    # Фраза завершилась - запускаем проверку слова-триггера (минимум 0.50 с речи для отсечения бытовых щелчков и шума)
-                    if len(self._wake_buffer) >= int(SAMPLE_RATE * 0.50 / CHUNK_SIZE):
-                        audio_candidate = np.concatenate(self._wake_buffer)
-                        self._wake_buffer = []
-                        self._wake_speech_active = False
-                        self._wake_silence_start = None
-                        self._async_check_wake_word(audio_candidate)
-                    else:
-                        self._wake_buffer = []
-                        self._wake_speech_active = False
-                        self._wake_silence_start = None
-
-    def _async_check_wake_word(self, audio: np.ndarray):
-        """Асинхронный инференс STT для проверки слова-триггера."""
         with self._state_lock:
-            if self._is_checking_wake:
-                return
-            self._is_checking_wake = True
+            now = time.time()
+            is_speech = rms > self.speech_energy_threshold
 
-        def worker():
+            # Сохраняем короткий кольцевой буфер до начала речи (чтобы не срезать первый согласный звук)
+            if not self._wake_speech_active:
+                self._wake_pre_buffer.append(chunk)
+                if len(self._wake_pre_buffer) > int(SAMPLE_RATE * 0.15 / CHUNK_SIZE):
+                    self._wake_pre_buffer.pop(0)
+
+            if is_speech:
+                if not self._wake_speech_active:
+                    self._wake_speech_active = True
+                    self._wake_buffer.extend(self._wake_pre_buffer)
+                    self._wake_pre_buffer.clear()
+                self._wake_silence_start = None
+                self._wake_buffer.append(chunk)
+                # Ограничиваем буфер фразы до 3.5 секунд (чтобы вместить фразу целиком)
+                if len(self._wake_buffer) > int(SAMPLE_RATE * 3.5 / CHUNK_SIZE):
+                    self._wake_buffer.pop(0)
+            else:
+                if self._wake_speech_active:
+                    self._wake_buffer.append(chunk)
+                    if self._wake_silence_start is None:
+                        self._wake_silence_start = now
+                    elif (now - self._wake_silence_start) * 1000 > 320:
+                        # Фраза завершилась - запускаем проверку слова-триггера (минимум 0.50 с речи)
+                        if len(self._wake_buffer) >= int(SAMPLE_RATE * 0.50 / CHUNK_SIZE):
+                            audio_candidate = np.concatenate(self._wake_buffer)
+                            self._wake_buffer = []
+                            self._wake_speech_active = False
+                            self._wake_silence_start = None
+                            self._async_check_wake_word(audio_candidate)
+                        else:
+                            self._wake_buffer = []
+                            self._wake_speech_active = False
+                            self._wake_silence_start = None
+
+    def _ensure_wake_worker(self) -> None:
+        """Гарантирует работу выделенного потока-воркера Wake Word."""
+        if self._wake_worker_thread is None or not self._wake_worker_thread.is_alive():
+            self._wake_worker_thread = threading.Thread(target=self._wake_worker_loop, daemon=True)
+            self._wake_worker_thread.start()
+
+    def _wake_worker_loop(self) -> None:
+        """Долгоживущий рабочий цикл проверки ключевого слова."""
+        while self._is_running:
             try:
-                if self._stt_engine and self._mode == "wake_listen":
-                    text = self._stt_engine.transcribe(audio).lower().strip()
-                    if not text:
-                        return
+                audio = self._wake_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
 
-                    # Очищаем от знаков препинания для пословного анализа
-                    clean_text = re.sub(r"[^\w\s]", " ", text)
-                    words = clean_text.split()
+            if audio is None:
+                break
 
-                    # Проверяем совпадение со словом-триггером
-                    matched = False
-                    for w in self._wake_words:
-                        w_lower = w.lower()
-                        # Прямое совпадение
-                        if w_lower in text or w_lower in words:
-                            matched = True
-                            break
-                        # Нечеткое совпадение по корню для вариантов Whisper (жарвис, джарвиз, ярвис)
-                        if len(w_lower) >= 4 and any(
-                            word.startswith(w_lower[:4]) or w_lower.startswith(word[:4])
-                            for word in words if len(word) >= 4
-                        ):
-                            matched = True
-                            break
-
-                    if matched and self._on_wake_detected:
-                        # Проверяем, была ли команда сказана в той же фразе («Джарвис открой ютуб»)
-                        tail_cmd = ""
-                        pattern = rf"(?:^|\s)(?:{'|'.join(re.escape(w) for w in self._wake_words)})\w*[\s,]+(.+)"
-                        match_tail = re.search(pattern, text, flags=re.IGNORECASE)
-                        if match_tail:
-                            candidate = match_tail.group(1).strip()
-                            if len(candidate.split()) >= 1:
-                                tail_cmd = candidate
-
-                        try:
-                            self._on_wake_detected(tail_cmd)
-                        except TypeError:
-                            self._on_wake_detected()
+            try:
+                self._handle_wake_audio(audio)
             except Exception as e:
                 print(f"[AudioListener] Ошибка фоновой проверки Wake Word: {e}", file=sys.stderr)
             finally:
+                self._wake_queue.task_done()
                 with self._state_lock:
                     self._is_checking_wake = False
 
-        threading.Thread(target=worker, daemon=True).start()
+    def _async_check_wake_word(self, audio: np.ndarray) -> None:
+        """Передает сэмпл в очередь фонового воркера без создания лишних потоков."""
+        if self._is_checking_wake:
+            return
+        self._is_checking_wake = True
+        self._ensure_wake_worker()
+        try:
+            self._wake_queue.put_nowait(audio)
+        except queue.Full:
+            self._is_checking_wake = False
+
+    def _handle_wake_audio(self, audio: np.ndarray) -> None:
+        """Инференс STT для проверки слова-триггера."""
+        with self._state_lock:
+            stt = self._stt_engine
+            mode = self._mode
+            words_list = list(self._wake_words)
+            cb = self._on_wake_detected
+
+        if not stt or mode != "wake_listen":
+            return
+
+        text = stt.transcribe(audio).lower().strip()
+        if not text:
+            return
+
+        # Очищаем от знаков препинания для пословного анализа
+        clean_text = re.sub(r"[^\w\s]", " ", text)
+        words = clean_text.split()
+
+        # Проверяем совпадение со словом-триггером
+        matched = False
+        for w in words_list:
+            w_lower = w.lower()
+            if w_lower in text or w_lower in words:
+                matched = True
+                break
+            if len(w_lower) >= 4 and any(
+                word.startswith(w_lower[:4]) or w_lower.startswith(word[:4])
+                for word in words if len(word) >= 4
+            ):
+                matched = True
+                break
+
+        if matched and cb:
+            tail_cmd = ""
+            pattern = rf"(?:^|\s)(?:{'|'.join(re.escape(w) for w in words_list)})\w*[\s,]+(.+)"
+            match_tail = re.search(pattern, text, flags=re.IGNORECASE)
+            if match_tail:
+                candidate = match_tail.group(1).strip()
+                if len(candidate.split()) >= 1:
+                    tail_cmd = candidate
+
+            try:
+                cb(tail_cmd)
+            except TypeError:
+                cb()
 
     def record_command(self, max_duration_sec: float = 8.0) -> np.ndarray:
         """

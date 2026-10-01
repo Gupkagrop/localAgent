@@ -758,6 +758,7 @@ class AppCoordinator(QObject):
 
         if not enable:
             # Выгружаем модели из VRAM и останавливаем фоновый микрофон
+            self._vision_timer.stop()
             self.emit_ui_state("glow_stop")
             self.listener.stop_wake_word_loop()
             self.stt.unload_model()
@@ -766,6 +767,8 @@ class AppCoordinator(QObject):
             self.window.set_llm_status("not_installed" if not self.decision_engine.is_llm_available() else False)
             self.log("Ассистент остановлен. Видеопамять (VRAM) освобождена до 0 МБ.")
         else:
+            if not self._vision_timer.isActive():
+                self._vision_timer.start()
             self._apply_activation_mode()
             if self.decision_engine.is_llm_available():
                 self.window.set_llm_status("loading", progress=0)
@@ -912,6 +915,7 @@ class AppCoordinator(QObject):
 
     def exit_app(self):
         """Полное закрытие приложения и освобождение системных ресурсов."""
+        self._vision_timer.stop()
         self.screen_glow.stop_glow()
         self.hook.stop()
         self.listener.stop_stream()

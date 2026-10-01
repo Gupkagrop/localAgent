@@ -260,6 +260,23 @@ class ActionParser:
         keys_normalized = set(alias_map.get(k.lower().strip(), k.lower().strip()) for k in keys)
         return any(all(k in keys_normalized for k in combo) for combo in dangerous_combos)
 
+    @staticmethod
+    def is_dangerous_command_text(text: str) -> bool:
+        """Проверяет вводимый текст на наличие деструктивных команд ОС."""
+        if not text:
+            return False
+        clean = text.strip()
+        patterns = [
+            r'(?i)\b(?:format|diskpart|bcdedit)\b',
+            r'(?i)\b(?:del|rmdir|rd)\s+.*\/s\b',
+            r'(?i)\b(?:Remove-Item|ri|rm|del)\s+.*-(?:Recurse|r)\b',
+            r'(?i)\b(?:reg\s+(?:delete|add)|regedit)\b',
+            r'(?i)\b(?:shutdown|restart-computer|stop-computer)\b',
+            r'(?i)\b(?:vssadmin\s+delete\s+shadows)\b',
+            r'(?i)\b(?:powershell|cmd)\.exe\s+.*-(?:enc|encodedcommand|c|command)\b',
+        ]
+        return any(bool(re.search(pat, clean)) for pat in patterns)
+
 
 class FailSafeMonitor:
     """Контроллер экстренной остановки агента при вмешательстве пользователя."""
@@ -647,6 +664,15 @@ def _worker_process_loop(
                             screen.click(screen_x, screen_y, button="right")
 
                     elif action.action_type == "type":
+                        # Программные guardrails: блокировка деструктивных системных команд
+                        if action.press_enter and ActionParser.is_dangerous_command_text(action.text):
+                            blocked_str = action.text.strip()
+                            status_queue.put({
+                                "type": "confirmation_requested",
+                                "message": f"Блокировка ввода потенциально опасной команды: «{blocked_str}»"
+                            })
+                            final_message = f"Опасный ввод команды отклонен: {blocked_str}"
+                            break
                         screen.type_text(action.text, press_enter=action.press_enter)
 
                     elif action.action_type == "press" and action.key:
@@ -685,6 +711,15 @@ def _worker_process_loop(
                 del processor
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+
+            try:
+                status_queue.close()
+            except Exception:
+                pass
+            try:
+                task_queue.close()
+            except Exception:
+                pass
 
     except Exception as e:
         tb = traceback.format_exc()
@@ -776,6 +811,20 @@ class VisionAgentProcessManager:
             self._process.join(timeout=4.0)
             if self._process.is_alive():
                 self._process.terminate()
+
+        if self._task_queue is not None:
+            try:
+                self._task_queue.cancel_join_thread()
+                self._task_queue.close()
+            except Exception:
+                pass
+
+        if self._status_queue is not None:
+            try:
+                self._status_queue.cancel_join_thread()
+                self._status_queue.close()
+            except Exception:
+                pass
 
         self._process = None
         self._task_queue = None

@@ -64,7 +64,11 @@ class TextToSpeech:
                 try:
                     with self._lock:
                         if self._is_piper_requested():
-                            success = self._speak_piper(text)
+                            try:
+                                success = self._speak_piper(text)
+                            except Exception as pe:
+                                print(f"[TTS Piper Error] {pe}")
+                                success = False
                             if not success:
                                 print("[TTS] Фоллбэк на Windows SAPI5...")
                                 self._speak_sapi5(text)
@@ -248,7 +252,12 @@ class TextToSpeech:
         else:
             with self._lock:
                 if self._is_piper_requested():
-                    if not self._speak_piper(text):
+                    try:
+                        success = self._speak_piper(text)
+                    except Exception as pe:
+                        print(f"[TTS Piper Error] {pe}")
+                        success = False
+                    if not success:
                         self._speak_sapi5(text)
                 else:
                     self._speak_sapi5(text)

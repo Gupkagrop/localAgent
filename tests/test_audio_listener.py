@@ -22,16 +22,16 @@ class TestAudioListener(unittest.TestCase):
         self.assertEqual(self.listener.silence_threshold_ms, 400)
 
     def test_rms_calculation_silence(self):
-        """Проверка расчета RMS для абсолютной тишины."""
+        """Проверка расчета RMS для абсолютной тишины через статический метод класса."""
         silence = np.zeros(CHUNK_SIZE, dtype=np.float32)
-        rms = float(np.sqrt(np.mean(silence ** 2)))
+        rms = AudioListener.calculate_rms(silence)
         self.assertEqual(rms, 0.0)
 
     def test_rms_calculation_sine_wave(self):
         """Проверка расчета RMS для тестового синусоидального сигнала."""
         t = np.linspace(0, 1, CHUNK_SIZE, endpoint=False)
         sine = (np.sin(2 * np.pi * 440 * t) * 0.5).astype(np.float32)
-        rms = float(np.sqrt(np.mean(sine ** 2)))
+        rms = AudioListener.calculate_rms(sine)
         # Для синусоиды амплитудой A RMS равен A / sqrt(2) ≈ 0.5 / 1.4142 ≈ 0.3535
         self.assertAlmostEqual(rms, 0.3535, places=2)
         self.assertGreater(rms, self.listener.speech_energy_threshold)

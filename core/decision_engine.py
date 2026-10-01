@@ -348,7 +348,21 @@ class DecisionEngine:
                     "parameters": {"domain": site_key}
                 }
 
-        # 11. Запуск приложений по точным системным алиасам (без параметров)
+        # 11a. Запуск составных (многословных) приложений из конфигурации
+        multi_word_apps = sorted(
+            [(k, v) for k, v in self.app_map.items() if " " in k],
+            key=lambda item: len(item[0]),
+            reverse=True
+        )
+        for app_phrase, app_target in multi_word_apps:
+            if app_phrase in q and any(v in q for v in ["открой", "запусти", "включи"]):
+                return {
+                    "action": "launch_app",
+                    "target": app_target,
+                    "parameters": {"app_name": app_phrase}
+                }
+
+        # 11b. Запуск приложений по точным системным алиасам (без параметров)
         launch_match = re.search(r"^(?:открой|запусти|включи)\s+([a-zA-Zа-яА-Я0-9_.-]+)$", q)
         if launch_match:
             app_key = launch_match.group(1).lower()

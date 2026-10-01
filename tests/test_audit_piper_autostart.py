@@ -147,16 +147,44 @@ class TestPiperAndAutostartAudit(unittest.TestCase):
         self.assertIn(pythonw_path, cmd_min)
         self.assertIn(main_path, cmd_min)
 
-        # Тестирование записи, чтения и удаления в реестре HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+        # Тестирование записи, чтения и удаления в реестре с изоляцией от системного реестра
         test_app_key = "AntigravityVoice_UnitTestAudit"
-        try:
+        fake_registry: dict[str, tuple[str, int]] = {}
+
+        class FakeKey:
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+
+        def fake_open_key(key, sub_key, reserved=0, access=0):
+            return FakeKey()
+
+        def fake_set_value_ex(key, name, reserved, reg_type, value):
+            fake_registry[name] = (value, reg_type)
+
+        def fake_query_value_ex(key, name):
+            if name not in fake_registry:
+                raise FileNotFoundError(f"Ключ {name} не найден")
+            return fake_registry[name]
+
+        def fake_delete_value(key, name):
+            if name not in fake_registry:
+                raise FileNotFoundError(f"Ключ {name} не найден")
+            del fake_registry[name]
+
+        with patch("core.autostart.winreg.OpenKey", side_effect=fake_open_key), \
+             patch("core.autostart.winreg.SetValueEx", side_effect=fake_set_value_ex), \
+             patch("core.autostart.winreg.QueryValueEx", side_effect=fake_query_value_ex), \
+             patch("core.autostart.winreg.DeleteValue", side_effect=fake_delete_value):
+
             # 1. Запись True + minimized
             ok = set_windows_autostart(True, app_name=test_app_key, start_minimized=True)
             self.assertTrue(ok, "set_windows_autostart(True) вернул False")
             self.assertTrue(is_windows_autostart_enabled(app_name=test_app_key))
             reg_val = get_autostart_command(app_name=test_app_key)
             self.assertEqual(reg_val, cmd_min)
-            print(f"[Test 3] Запись в реестр HKCU Run успешна: {reg_val}")
+            print(f"[Test 3] Виртуальная запись в реестр HKCU Run успешна: {reg_val}")
 
             # 2. Обновление флага minimized=False
             ok = set_windows_autostart(True, app_name=test_app_key, start_minimized=False)
@@ -171,9 +199,6 @@ class TestPiperAndAutostartAudit(unittest.TestCase):
             self.assertFalse(is_windows_autostart_enabled(app_name=test_app_key))
             self.assertIsNone(get_autostart_command(app_name=test_app_key))
             print("[Test 3] Удаление параметра из реестра подтверждено.")
-        finally:
-            # Гарантированная зачистка
-            set_windows_autostart(False, app_name=test_app_key)
 
     def test_04_gui_signals_and_settings_integration(self):
         """Проверка связки сигналов в MainWindow: settings.json, автозапуск, смена голоса."""

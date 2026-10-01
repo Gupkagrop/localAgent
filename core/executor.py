@@ -79,6 +79,23 @@ class CommandExecutor:
                 print(f"[CommandExecutor] Ошибка загрузки commands.json: {e}", file=sys.stderr)
         return {}
 
+    @staticmethod
+    def sanitize_sensitive_text(text: str) -> str:
+        """Маскирует явные API токены, ключи и секреты в строке."""
+        if not text:
+            return text
+        # GitHub Personal Access Token (classic & fine-grained)
+        text = re.sub(r'\b(gh[pousr]_[A-Za-z0-9_]{36,255})\b', '[REDACTED_GH_TOKEN]', text)
+        # AWS Access Key ID
+        text = re.sub(r'\b(AKIA[0-9A-Z]{16})\b', '[REDACTED_AWS_KEY]', text)
+        # OpenAI / Anthropic API keys (sk-...)
+        text = re.sub(r'\b(sk-[a-zA-Z0-9_-]{20,})\b', '[REDACTED_API_KEY]', text)
+        # Bearer tokens
+        text = re.sub(r'(?i)\bBearer\s+[a-zA-Z0-9_\-\.]{20,}\b', 'Bearer [REDACTED_TOKEN]', text)
+        # JWT токены (header.payload.signature)
+        text = re.sub(r'\beyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*\b', '[REDACTED_JWT]', text)
+        return text
+
     def log(self, message: str) -> None:
         if self.on_log:
             self.on_log(message)
@@ -336,6 +353,14 @@ class CommandExecutor:
             win32gui.SetForegroundWindow(hwnd)
             time.sleep(0.15)
 
+            # Проверяем, что окно действительно активно перед отправкой ввода
+            fg_hwnd = win32gui.GetForegroundWindow()
+            if fg_hwnd != hwnd:
+                time.sleep(0.1)
+                fg_hwnd = win32gui.GetForegroundWindow()
+                if fg_hwnd != hwnd:
+                    return False, "Не удалось активировать окно Antigravity перед отправкой ввода"
+
             if target == "prompt":
                 prompt_text = params.get("prompt", "")
                 if params.get("new_chat"):
@@ -400,15 +425,22 @@ class CommandExecutor:
             return False, f"Ошибка управления окном Antigravity: {e}"
 
     def _handle_antigravity_cli(self, prompt: str, params: dict | None = None) -> tuple[bool, str]:
-        """Запускает Antigravity CLI в Windows Terminal."""
+        """Запускает Antigravity CLI в Windows Terminal с санитизацией команд и защитой данных."""
         cli_exe = self.cli_executable
+        # Защита от Command Injection через имя исполняемого файла
+        safe_cli_exe = re.sub(r'[\'"`$;|&><\r\n]', '', cli_exe).strip()
+        if not safe_cli_exe:
+            safe_cli_exe = "agy"
 
         if params and params.get("use_clipboard"):
+            prev_clip = None
             try:
-                # Очищаем буфер перед эмуляцией Ctrl+C, чтобы исключить случайную отправку старых секретов
+                # Читаем предыдущий буфер пользователя перед эмуляцией копирования
                 try:
                     win32clipboard.OpenClipboard()
                     try:
+                        if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
+                            prev_clip = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
                         win32clipboard.EmptyClipboard()
                     finally:
                         win32clipboard.CloseClipboard()
@@ -434,18 +466,33 @@ class CommandExecutor:
                 except Exception:
                     clip_text = ""
 
+                # Если выделения не было, восстанавливаем исходный буфер обмена
+                if not (clip_text and clip_text.strip()) and prev_clip is not None:
+                    try:
+                        win32clipboard.OpenClipboard()
+                        try:
+                            win32clipboard.EmptyClipboard()
+                            win32clipboard.SetClipboardText(prev_clip, win32con.CF_UNICODETEXT)
+                        finally:
+                            win32clipboard.CloseClipboard()
+                    except Exception:
+                        pass
+
                 if clip_text and clip_text.strip():
                     prompt = f"{prompt}\n\n{clip_text.strip()}"
             except Exception as e:
                 self.log(f"Предупреждение при чтении буфера обмена: {e}")
 
+        # Санитизация токенов и секретов
+        clean_prompt = self.sanitize_sensitive_text(prompt)
+
         # Формируем Base64-команду PowerShell с безопасной передачей промпта через переменную окружения
         env = os.environ.copy()
-        if prompt:
-            env["AGY_PROMPT"] = prompt
-            ps_script = f"& '{cli_exe}' -p $env:AGY_PROMPT"
+        if clean_prompt:
+            env["AGY_PROMPT"] = clean_prompt
+            ps_script = f"& '{safe_cli_exe}' -p $env:AGY_PROMPT"
         else:
-            ps_script = f"& '{cli_exe}'"
+            ps_script = f"& '{safe_cli_exe}'"
 
         encoded = base64.b64encode(ps_script.encode("utf-16le")).decode("ascii")
 
@@ -453,7 +500,7 @@ class CommandExecutor:
             # Запуск через Windows Terminal с флагом -EncodedCommand без shell=True
             args = ["wt.exe", "-w", "0", "nt", "powershell.exe", "-NoExit", "-EncodedCommand", encoded]
             subprocess.Popen(args, env=env, shell=False)
-            self.log(f"Запущен Antigravity CLI с задачей: {prompt or 'интерактивный режим'}")
+            self.log(f"Запущен Antigravity CLI с задачей: {clean_prompt[:50] or 'интерактивный режим'}")
             return True, "Antigravity CLI запущен в терминале"
         except Exception:
             # Fallback если wt.exe недоступен
