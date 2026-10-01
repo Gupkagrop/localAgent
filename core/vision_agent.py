@@ -403,6 +403,15 @@ class FailSafeMonitor:
         self.user32 = ctypes.windll.user32
         self._last_cursor_pos: tuple[int, int] | None = None
 
+    def reset(self) -> None:
+        """Сбрасывает сохраненную позицию курсора и состояние клавиши ESC перед началом новой задачи."""
+        self._last_cursor_pos = None
+        try:
+            # Опрос GetAsyncKeyState очищает бит переключения (transition bit) в Win32 API
+            self.user32.GetAsyncKeyState(0x1B)
+        except Exception:
+            pass
+
     def get_cursor_position(self) -> tuple[int, int]:
         """Возвращает текущие экранные координаты курсора мыши."""
         pt = POINT()
@@ -418,8 +427,11 @@ class FailSafeMonitor:
         Проверяет, нажал ли пользователь клавишу ESC или физически дернул мышь.
         """
         # 1. Проверка нажатия ESC (VK_ESCAPE = 0x1B)
-        if self.user32.GetAsyncKeyState(0x1B) & 0x8000:
-            return True, "Прервано пользователем (клавиша ESC)"
+        try:
+            if self.user32.GetAsyncKeyState(0x1B) & 0x8000:
+                return True, "Прервано пользователем (клавиша ESC)"
+        except Exception:
+            pass
 
         # 2. Проверка физического движения мыши
         if self._last_cursor_pos is not None:
@@ -597,6 +609,8 @@ def _worker_process_loop(
 
                 if cancel_event is not None:
                     cancel_event.clear()
+
+                failsafe.reset()
 
                 prompt = task.get("prompt", "")
                 max_steps = task.get("max_steps", 8)
@@ -855,6 +869,8 @@ def _worker_process_loop(
                         "message": final_message or "Достигнут лимит шагов"
                     })
 
+                failsafe.reset()
+
         finally:
             # Гарантированная выгрузка модели и освобождение VRAM при остановке или сбое
             if model is not None:
@@ -992,6 +1008,13 @@ class VisionAgentProcessManager:
         self._is_busy = False
         if self._cancel_event is not None:
             self._cancel_event.set()
+        # Очистка очереди входящих задач, чтобы исключить запуск старых заданий
+        if self._task_queue is not None:
+            for _ in range(100):
+                try:
+                    self._task_queue.get_nowait()
+                except Exception:
+                    break
 
     def poll_status(self) -> list[dict[str, str | bool | int | float | None]]:
         """Опрашивает очередь обновлений статуса от рабочего процесса."""

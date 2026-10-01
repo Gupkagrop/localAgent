@@ -283,6 +283,54 @@ class TestVisionAgentE2E(unittest.TestCase):
         self.assertEqual(events[-1]["type"], "task_completed")
         self.assertTrue(events[-1]["success"])
 
+    def test_interruption_does_not_block_subsequent_tasks(self) -> None:
+        """Сквозная проверка: прерывание первой задачи не блокирует повторный запуск агента."""
+        failsafe = FailSafeMonitor()
+
+        # Задача 1: агент выполнил клик в координаты (150, 300)
+        failsafe.update_known_position(150, 300)
+
+        # Пользователь прервал задачу 1, дернув мышь в координаты (650, 800)
+        with patch.object(failsafe.user32, "GetAsyncKeyState", return_value=0):
+            with patch.object(failsafe, "get_cursor_position", return_value=(650, 800)):
+                interrupted1, reason1 = failsafe.is_interrupted()
+                self.assertTrue(interrupted1)
+                self.assertIn("мыши", reason1)
+
+                # Завершение задачи 1 вызывает failsafe.reset()
+                failsafe.reset()
+
+                # Пользователь запускает Задачу 2. Курсор мыши все еще в (650, 800)
+                # Проверяем, что Шаг 1 Задачи 2 НЕ прерывается
+                interrupted2, reason2 = failsafe.is_interrupted()
+                self.assertFalse(interrupted2)
+                self.assertEqual(reason2, "")
+
+    def test_process_manager_abort_and_subsequent_execute(self) -> None:
+        """Проверка сброса cancel_event при запуске новой задачи после abort_task."""
+        mgr = VisionAgentProcessManager()
+        mock_process = MagicMock()
+        mock_process.is_alive.return_value = True
+        mgr._process = mock_process
+        mgr._is_ready = True
+        mgr._task_queue = MagicMock()
+        mgr._cancel_event = MagicMock()
+
+        # Запуск задачи 1
+        mgr.execute_task("Задача 1")
+        self.assertTrue(mgr.is_busy())
+
+        # Пользователь экстренно отменяет задачу 1
+        mgr.abort_task()
+        self.assertFalse(mgr.is_busy())
+        mgr._cancel_event.set.assert_called()
+
+        # Пользователь запускает задачу 2
+        ok = mgr.execute_task("Задача 2")
+        self.assertTrue(ok)
+        self.assertTrue(mgr.is_busy())
+        mgr._cancel_event.clear.assert_called()
+
 
 if __name__ == "__main__":
     unittest.main()

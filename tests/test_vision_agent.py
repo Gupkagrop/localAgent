@@ -290,6 +290,40 @@ class TestFailSafeMonitor(unittest.TestCase):
                 self.assertFalse(interrupted)
                 self.assertEqual(reason, "")
 
+    def test_failsafe_reset_clears_state(self) -> None:
+        """Метод reset() сбрасывает сохраненную позицию курсора и состояние GetAsyncKeyState."""
+        monitor = FailSafeMonitor()
+        monitor.update_known_position(100, 100)
+        self.assertEqual(monitor._last_cursor_pos, (100, 100))
+
+        with patch.object(monitor.user32, "GetAsyncKeyState") as mock_get_async:
+            monitor.reset()
+            self.assertIsNone(monitor._last_cursor_pos)
+            mock_get_async.assert_called_with(0x1B)
+
+    def test_interruption_does_not_stick_after_reset(self) -> None:
+        """После прерывания первой задачи и вызова reset() следующая задача не прерывается ложно."""
+        monitor = FailSafeMonitor()
+        # Шаг 1 задачи 1: агент запомнил позицию (100, 100)
+        monitor.update_known_position(100, 100)
+
+        # Пользователь прервал задачу 1 сдвигом мыши в точку (500, 500)
+        with patch.object(monitor.user32, "GetAsyncKeyState", return_value=0):
+            with patch.object(monitor, "get_cursor_position", return_value=(500, 500)):
+                interrupted, reason = monitor.is_interrupted()
+                self.assertTrue(interrupted)
+                self.assertIn("мыши", reason)
+
+                # Завершение задачи 1 вызывает reset()
+                monitor.reset()
+
+                # Старт задачи 2: курсор все еще в точке (500, 500)
+                # Без reset() задача 2 немедленно прервалась бы из-за старой позиции (100, 100)
+                interrupted2, reason2 = monitor.is_interrupted()
+                self.assertFalse(interrupted2)
+                self.assertEqual(reason2, "")
+
+
 
 class TestProcessManager(unittest.TestCase):
     """Тестирование диспетчера процессов VisionAgentProcessManager."""
